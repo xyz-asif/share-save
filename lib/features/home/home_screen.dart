@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -175,6 +176,11 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
           height: 200,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(22),
+            color: widget.anchor.color.withValues(alpha: 0.12),
+            border: Border.all(
+              color: widget.anchor.color.withValues(alpha: 0.35),
+              width: 1.5,
+            ),
             boxShadow: [
               BoxShadow(
                 color: widget.anchor.color.withValues(alpha: 0.18),
@@ -185,20 +191,25 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
             ],
           ),
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(22),
+            borderRadius: BorderRadius.circular(21),
             child: Stack(
               fit: StackFit.expand,
               children: [
-                _PreviewBackground(items: items, color: widget.anchor.color),
+                _ColorFill(color: widget.anchor.color),
+                if (items.isNotEmpty)
+                  _PreviewBackground(items: items, color: widget.anchor.color),
                 Positioned(
-                  left: 0, right: 0, bottom: 0, height: 76,
-                  child: ClipRect(
+                  left: 0, right: 0, bottom: 0, height: 96,
+                  child: ClipRRect(
+                    borderRadius: const BorderRadius.vertical(
+                      top: Radius.circular(20),
+                    ),
                     child: BackdropFilter(
-                      filter: ui.ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                      filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                       child: Container(
-                        color: widget.anchor.color.withValues(alpha: 0.55),
+                        color: widget.anchor.color.withValues(alpha: 0.12),
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 12),
+                            horizontal: 16, vertical: 18),
                         child: _CardInfo(anchor: widget.anchor),
                       ),
                     ),
@@ -220,71 +231,68 @@ class _PreviewBackground extends StatelessWidget {
   final Color color;
   const _PreviewBackground({required this.items, required this.color});
 
+  static const _angles = [-5.0, 4.0, -4.5, 5.5]; // degrees per slot
+
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        _ColorFill(color: color),
-        if (items.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-            child: _buildGrid(),
-          ),
-      ],
+    return LayoutBuilder(builder: (context, constraints) {
+      final totalW = constraints.maxWidth;
+      final count = items.length.clamp(1, 4);
+      final slots = items.take(count).toList();
+
+      if (count == 1) {
+        return Padding(
+          padding: EdgeInsets.fromLTRB(totalW * 0.15, 10, totalW * 0.15, 0),
+          child: _styledSlot(slots[0], 0),
+        );
+      }
+
+      // Horizontal padding keeps edge items inside the card's rounded border
+      const double hPad = 12.0;
+      final double availW = totalW - 2 * hPad;
+      final double itemW = availW / count + 28;
+      final double step = (availW - itemW) / (count - 1);
+
+      return Stack(
+        clipBehavior: Clip.none,
+        children: [
+          for (int i = 0; i < slots.length; i++)
+            Positioned(
+              left: hPad + step * i,
+              top: 10,
+              bottom: 0,
+              width: itemW,
+              child: _styledSlot(slots[i], i),
+            ),
+        ],
+      );
+    });
+  }
+
+  Widget _styledSlot(AnchorItemModel item, int index) {
+    return Transform.rotate(
+      angle: _angles[index % _angles.length] * math.pi / 180,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white, width: 1.8),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.18),
+              blurRadius: 10, offset: const Offset(2, 4)),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: switch (item.type) {
+            ItemType.image => _Thumb(path: item.content),
+            ItemType.link  => _LinkCell(url: item.content, color: color),
+            _              => _TypeCell(type: item.type, color: color),
+          },
+        ),
+      ),
     );
   }
-
-  Widget _buildGrid() {
-    final count = items.length.clamp(1, 4);
-    final slots = items.take(count).toList();
-
-    if (count == 1) return _buildSlot(slots[0]);
-    if (count == 2) {
-      return Row(children: [
-        Expanded(flex: 3, child: _buildSlot(slots[0])),
-        const SizedBox(width: 6),
-        Expanded(flex: 2, child: _buildSlot(slots[1])),
-      ]);
-    }
-    if (count == 3) {
-      return Row(children: [
-        Expanded(flex: 5, child: _buildSlot(slots[0])),
-        const SizedBox(width: 6),
-        Expanded(
-          flex: 3,
-          child: Column(children: [
-            Expanded(child: _buildSlot(slots[1])),
-            const SizedBox(height: 6),
-            Expanded(child: _buildSlot(slots[2])),
-          ]),
-        ),
-      ]);
-    }
-    // 4 items: 2×2 grid
-    return Column(children: [
-      Expanded(child: Row(children: [
-        Expanded(child: _buildSlot(slots[0])),
-        const SizedBox(width: 6),
-        Expanded(child: _buildSlot(slots[1])),
-      ])),
-      const SizedBox(height: 6),
-      Expanded(child: Row(children: [
-        Expanded(child: _buildSlot(slots[2])),
-        const SizedBox(width: 6),
-        Expanded(child: _buildSlot(slots[3])),
-      ])),
-    ]);
-  }
-
-  Widget _buildSlot(AnchorItemModel item) => ClipRRect(
-    borderRadius: BorderRadius.circular(12),
-    child: switch (item.type) {
-      ItemType.image => _Thumb(path: item.content),
-      ItemType.link  => _LinkCell(url: item.content, color: color),
-      _              => _TypeCell(type: item.type, color: color),
-    },
-  );
 }
 
 class _LinkCell extends StatelessWidget {
@@ -304,26 +312,25 @@ class _LinkCell extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [color.withValues(alpha: 0.18), color.withValues(alpha: 0.07)],
+          colors: [color.withValues(alpha: 0.80), color.withValues(alpha: 0.60)],
         ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10),
-      child: Row(
+      child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.link_rounded, color: color.withValues(alpha: 0.75), size: 16),
-          const SizedBox(width: 5),
-          Flexible(
-            child: Text(
-              _domain,
-              style: TextStyle(
-                color: color.withValues(alpha: 0.85),
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+          Icon(Icons.link_rounded, color: Colors.white.withValues(alpha: 0.9), size: 22),
+          const SizedBox(height: 6),
+          Text(
+            _domain,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.95),
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
             ),
+            maxLines: 2,
+            textAlign: TextAlign.center,
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -350,19 +357,19 @@ class _TypeCell extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [color.withValues(alpha: 0.18), color.withValues(alpha: 0.07)],
+          colors: [color.withValues(alpha: 0.80), color.withValues(alpha: 0.60)],
         ),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10),
-      child: Row(
+      child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, color: color.withValues(alpha: 0.75), size: 16),
-          const SizedBox(width: 5),
+          Icon(icon, color: Colors.white.withValues(alpha: 0.9), size: 24),
+          const SizedBox(height: 6),
           Text(
             label,
             style: TextStyle(
-              color: color.withValues(alpha: 0.85),
+              color: Colors.white.withValues(alpha: 0.95),
               fontSize: 10,
               fontWeight: FontWeight.w600,
             ),
@@ -421,48 +428,31 @@ class _CardInfo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                anchor.name,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.2,
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              const SizedBox(height: 2),
-              Text(
-                anchor.itemCount == 0
-                    ? 'Empty'
-                    : '${anchor.itemCount} item${anchor.itemCount == 1 ? '' : 's'}',
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.75),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w400,
-                ),
-              ),
-            ],
+        Text(
+          anchor.name,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.2,
           ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
-        const SizedBox(width: 8),
-        Container(
-          width: 30, height: 30,
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.25),
-            shape: BoxShape.circle,
+        const SizedBox(height: 2),
+        Text(
+          anchor.itemCount == 0
+              ? 'Empty'
+              : '${anchor.itemCount} item${anchor.itemCount == 1 ? '' : 's'}',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.75),
+            fontSize: 12,
+            fontWeight: FontWeight.w400,
           ),
-          child: const Icon(Icons.arrow_forward_ios_rounded,
-              color: Colors.white, size: 12),
         ),
       ],
     );
