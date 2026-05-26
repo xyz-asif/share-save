@@ -237,15 +237,16 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  height: 96.h,
+                  height: 88.h,
                   child: Container(
                     foregroundDecoration: BoxDecoration(
                       borderRadius: BorderRadius.vertical(
                         top: Radius.circular(20.r),
                       ),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.55),
-                        width: 1.2,
+                      border: Border(
+                        top: BorderSide(color: Colors.white.withValues(alpha: 0.55), width: 1.2),
+                        left: BorderSide(color: Colors.white.withValues(alpha: 0.55), width: 1.2),
+                        right: BorderSide(color: Colors.white.withValues(alpha: 0.55), width: 1.2),
                       ),
                     ),
                     child: ClipRRect(
@@ -291,7 +292,7 @@ class _PreviewBackground extends StatelessWidget {
 
       if (count == 1) {
         return Padding(
-          padding: EdgeInsets.fromLTRB(totalW * 0.15, 8.h, totalW * 0.15, 36.h),
+          padding: EdgeInsets.fromLTRB(totalW * 0.15, 10.h, totalW * 0.15, 31.h),
           child: _styledSlot(slots[0], 0),
         );
       }
@@ -308,8 +309,8 @@ class _PreviewBackground extends StatelessWidget {
           for (int i = 0; i < slots.length; i++)
             Positioned(
               left: hPad + step * i,
-              top: 8.h,
-              bottom: 36.h,
+              top: 10.h,
+              bottom: 31.h,
               width: itemW,
               child: _styledSlot(slots[i], i),
             ),
