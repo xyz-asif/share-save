@@ -205,7 +205,7 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
             borderRadius: BorderRadius.circular(22.r),
             color: widget.anchor.color.withValues(alpha: 0.12),
             border: Border.all(
-              color: widget.anchor.color.withValues(alpha: 0.35),
+              color: Colors.white.withValues(alpha: 0.45),
               width: 1.5,
             ),
             boxShadow: [
@@ -227,17 +227,28 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
                   _PreviewBackground(items: items, color: widget.anchor.color),
                 Positioned(
                   left: 0, right: 0, bottom: 0, height: 96.h,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.vertical(
-                      top: Radius.circular(20.r),
+                  child: Container(
+                    foregroundDecoration: BoxDecoration(
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(20.r),
+                      ),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.35),
+                        width: 1.0,
+                      ),
                     ),
-                    child: BackdropFilter(
-                      filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                      child: Container(
-                        color: widget.anchor.color.withValues(alpha: 0.02),
-                        padding: EdgeInsets.symmetric(
-                            horizontal: 16.w, vertical: 18.h),
-                        child: _CardInfo(anchor: widget.anchor),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(20.r),
+                      ),
+                      child: BackdropFilter(
+                        filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                        child: Container(
+                          color: Colors.white.withValues(alpha: 0.10),
+                          padding: EdgeInsets.symmetric(
+                              horizontal: 16.w, vertical: 18.h),
+                          child: _CardInfo(anchor: widget.anchor),
+                        ),
                       ),
                     ),
                   ),
