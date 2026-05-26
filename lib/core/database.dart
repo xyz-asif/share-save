@@ -108,7 +108,7 @@ class AppDatabase {
     final rows = await (await db).rawQuery('''
       SELECT * FROM anchor_items
       WHERE anchor_id = ?
-      ORDER BY CASE WHEN type = 'image' THEN 0 ELSE 1 END, created_at DESC
+      ORDER BY created_at DESC
       LIMIT ?
     ''', [anchorId, limit]);
     return rows.map(AnchorItemModel.fromMap).toList();

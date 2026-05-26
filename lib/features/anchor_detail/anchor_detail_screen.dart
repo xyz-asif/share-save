@@ -29,6 +29,7 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
   late final AnimationController _animCtrl;
   late final Animation<double> _appBarFade;
   late final Animation<Offset> _appBarSlide;
+  String? _jigglingItemId;
 
   @override
   void initState() {
@@ -36,7 +37,10 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
     _animCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 750),
-    )..forward();
+    );
+    Future.delayed(const Duration(milliseconds: 330), () {
+      if (mounted) _animCtrl.forward();
+    });
     _appBarFade = CurvedAnimation(
       parent: _animCtrl,
       curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
@@ -236,10 +240,9 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
                 item: items[i],
                 anchorColor: anchor.color,
                 imageAspectRatio: _imgRatios[i % _imgRatios.length],
+                isJiggling: _jigglingItemId == items[i].id,
                 onTap: () => _openItem(ctx, items[i]),
-                onDelete: () => ref
-                    .read(anchorItemsProvider(anchor.id).notifier)
-                    .remove(items[i].id),
+                onLongPress: () => _onItemLongPress(items[i], anchor),
               ),
             ),
           );
@@ -283,6 +286,20 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
     }
   }
 
+  Future<void> _onItemLongPress(AnchorItemModel item, AnchorModel anchor) async {
+    HapticFeedback.mediumImpact();
+    setState(() => _jigglingItemId = item.id);
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _DeleteItemSheet(),
+    );
+    setState(() => _jigglingItemId = null);
+    if (confirmed == true) {
+      ref.read(anchorItemsProvider(anchor.id).notifier).remove(item.id);
+    }
+  }
+
   Future<void> _confirmDeleteAnchor(BuildContext context) async {
     HapticFeedback.mediumImpact();
     final anchor = widget.anchor;
@@ -300,11 +317,12 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
 
 // ─── Item card ────────────────────────────────────────────────────────────────
 
-class _ItemCard extends StatelessWidget {
+class _ItemCard extends StatefulWidget {
   final AnchorItemModel item;
   final Color anchorColor;
   final VoidCallback onTap;
-  final VoidCallback onDelete;
+  final VoidCallback onLongPress;
+  final bool isJiggling;
   final double imageAspectRatio;
 
   const _ItemCard({
@@ -312,36 +330,60 @@ class _ItemCard extends StatelessWidget {
     required this.item,
     required this.anchorColor,
     required this.onTap,
-    required this.onDelete,
+    required this.onLongPress,
+    required this.isJiggling,
     this.imageAspectRatio = 0.75,
   });
 
   @override
+  State<_ItemCard> createState() => _ItemCardState();
+}
+
+class _ItemCardState extends State<_ItemCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _jiggleCtrl;
+  late final Animation<double> _jiggleAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _jiggleCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 100),
+    );
+    _jiggleAnim = Tween<double>(begin: -0.04, end: 0.04).animate(
+      CurvedAnimation(parent: _jiggleCtrl, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void didUpdateWidget(_ItemCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isJiggling && !oldWidget.isJiggling) {
+      _jiggleCtrl.repeat(reverse: true);
+    } else if (!widget.isJiggling && oldWidget.isJiggling) {
+      _jiggleCtrl.stop();
+      _jiggleCtrl.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _jiggleCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Dismissible(
-      key: ValueKey(item.id),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: EdgeInsets.only(right: 18.w),
-        decoration: BoxDecoration(
-          color: AppColors.danger.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(16.r),
-        ),
-        child:
-            Icon(Icons.delete_rounded, color: AppColors.danger, size: 20.sp),
+    return AnimatedBuilder(
+      animation: _jiggleAnim,
+      builder: (context, child) => Transform.rotate(
+        angle: widget.isJiggling ? _jiggleAnim.value : 0,
+        child: child,
       ),
-      confirmDismiss: (_) async {
-        HapticFeedback.mediumImpact();
-        return await showModalBottomSheet<bool>(
-          context: context,
-          backgroundColor: Colors.transparent,
-          builder: (_) => const _DeleteItemSheet(),
-        );
-      },
-      onDismissed: (_) => onDelete(),
       child: GestureDetector(
-        onTap: onTap,
+        onTap: widget.onTap,
+        onLongPress: widget.onLongPress,
         child: Container(
           decoration: BoxDecoration(
             color: AppColors.card,
@@ -355,22 +397,20 @@ class _ItemCard extends StatelessWidget {
             ],
           ),
           clipBehavior: Clip.antiAlias,
-          child: switch (item.type) {
-            ItemType.image => _ImageContent(item: item, aspectRatio: imageAspectRatio),
-            ItemType.link =>
-              _LinkContent(item: item, accentColor: anchorColor),
-            ItemType.text =>
-              _TextContent(item: item, accentColor: anchorColor),
+          child: switch (widget.item.type) {
+            ItemType.image => _ImageContent(item: widget.item, aspectRatio: widget.imageAspectRatio),
+            ItemType.link => _LinkContent(item: widget.item, accentColor: widget.anchorColor),
+            ItemType.text => _TextContent(item: widget.item, accentColor: widget.anchorColor),
             ItemType.video => _MediaContent(
-                item: item,
+                item: widget.item,
                 icon: Icons.videocam_rounded,
                 color: const Color(0xFFFF9500)),
             ItemType.audio => _MediaContent(
-                item: item,
+                item: widget.item,
                 icon: Icons.audiotrack_rounded,
                 color: const Color(0xFFE91E8C)),
             ItemType.file => _MediaContent(
-                item: item,
+                item: widget.item,
                 icon: Icons.insert_drive_file_rounded,
                 color: AppColors.textTertiary),
           },
