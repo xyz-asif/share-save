@@ -67,8 +67,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             const _SliverHeader(),
             anchorsAsync.when(
               loading: () => const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator(
-                    color: AppColors.accent, strokeWidth: 2)),
+                child: Center(
+                    child: CircularProgressIndicator(
+                        color: AppColors.accent, strokeWidth: 2)),
               ),
               error: (e, _) => SliverFillRemaining(
                 child: _ErrorState(message: '$e'),
@@ -111,7 +112,8 @@ class _SliverHeader extends StatelessWidget {
       titleSpacing: 20.w,
       title: Row(children: [
         Container(
-          width: 30.r, height: 30.r,
+          width: 30.r,
+          height: 30.r,
           decoration: BoxDecoration(
             gradient: const LinearGradient(
               colors: [AppColors.accent, AppColors.accentSoft],
@@ -121,8 +123,9 @@ class _SliverHeader extends StatelessWidget {
             borderRadius: BorderRadius.circular(9.r),
             boxShadow: [
               BoxShadow(
-                color: AppColors.accent.withValues(alpha: 0.35),
-                blurRadius: 10, offset: const Offset(0, 4)),
+                  color: AppColors.accent.withValues(alpha: 0.35),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4)),
             ],
           ),
           child: Icon(Icons.anchor_rounded, color: Colors.white, size: 17.sp),
@@ -193,7 +196,10 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _pressed = true),
-      onTapUp: (_) { setState(() => _pressed = false); _onTap(); },
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        _onTap();
+      },
       onTapCancel: () => setState(() => _pressed = false),
       child: AnimatedScale(
         scale: _pressed ? 0.97 : 1.0,
@@ -210,11 +216,13 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
             ),
             boxShadow: [
               BoxShadow(
-                color: widget.anchor.color.withValues(alpha: 0.18),
-                blurRadius: 24, offset: const Offset(0, 10)),
+                  color: widget.anchor.color.withValues(alpha: 0.18),
+                  blurRadius: 24,
+                  offset: const Offset(0, 10)),
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.06),
-                blurRadius: 8, offset: const Offset(0, 2)),
+                  color: Colors.black.withValues(alpha: 0.06),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2)),
             ],
           ),
           child: ClipRRect(
@@ -226,15 +234,18 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
                 if (items.isNotEmpty)
                   _PreviewBackground(items: items, color: widget.anchor.color),
                 Positioned(
-                  left: 0, right: 0, bottom: 0, height: 96.h,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: 96.h,
                   child: Container(
                     foregroundDecoration: BoxDecoration(
                       borderRadius: BorderRadius.vertical(
                         top: Radius.circular(20.r),
                       ),
                       border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.35),
-                        width: 1.0,
+                        color: Colors.white.withValues(alpha: 0.55),
+                        width: 1.2,
                       ),
                     ),
                     child: ClipRRect(
@@ -242,18 +253,12 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
                         top: Radius.circular(20.r),
                       ),
                       child: BackdropFilter(
-                        filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                        filter: ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5),
                         child: Container(
-                          color: Colors.white.withValues(alpha: 0.10),
+                          color: Colors.white.withValues(alpha: 0.04),
                           padding: EdgeInsets.symmetric(
                               horizontal: 16.w, vertical: 18.h),
-                          child: _CardInfo(
-                            anchor: widget.anchor,
-                            contentTypes: items
-                                .map((e) => e.type)
-                                .toSet()
-                                .toList(),
-                          ),
+                          child: _CardInfo(anchor: widget.anchor, items: items),
                         ),
                       ),
                     ),
@@ -286,7 +291,7 @@ class _PreviewBackground extends StatelessWidget {
 
       if (count == 1) {
         return Padding(
-          padding: EdgeInsets.fromLTRB(totalW * 0.15, 10.h, totalW * 0.15, 0),
+          padding: EdgeInsets.fromLTRB(totalW * 0.15, 16.h, totalW * 0.15, 48.h),
           child: _styledSlot(slots[0], 0),
         );
       }
@@ -303,8 +308,8 @@ class _PreviewBackground extends StatelessWidget {
           for (int i = 0; i < slots.length; i++)
             Positioned(
               left: hPad + step * i,
-              top: 10.h,
-              bottom: 0,
+              top: 16.h,
+              bottom: 48.h,
               width: itemW,
               child: _styledSlot(slots[i], i),
             ),
@@ -322,16 +327,17 @@ class _PreviewBackground extends StatelessWidget {
           border: Border.all(color: Colors.white, width: 1.8),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.18),
-              blurRadius: 10, offset: const Offset(2, 4)),
+                color: Colors.black.withValues(alpha: 0.18),
+                blurRadius: 10,
+                offset: const Offset(2, 4)),
           ],
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(18.r),
           child: switch (item.type) {
             ItemType.image => _Thumb(path: item.content),
-            ItemType.link  => _LinkCell(url: item.content, color: color),
-            _              => _TypeCell(type: item.type, color: color),
+            ItemType.link => _LinkCell(url: item.content, color: color),
+            _ => _TypeCell(type: item.type, color: color),
           },
         ),
       ),
@@ -345,8 +351,11 @@ class _LinkCell extends StatelessWidget {
   const _LinkCell({required this.url, required this.color});
 
   String get _domain {
-    try { return Uri.parse(url).host.replaceFirst('www.', ''); }
-    catch (_) { return url; }
+    try {
+      return Uri.parse(url).host.replaceFirst('www.', '');
+    } catch (_) {
+      return url;
+    }
   }
 
   @override
@@ -356,14 +365,18 @@ class _LinkCell extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [color.withValues(alpha: 0.80), color.withValues(alpha: 0.60)],
+          colors: [
+            color.withValues(alpha: 0.80),
+            color.withValues(alpha: 0.60)
+          ],
         ),
       ),
       padding: EdgeInsets.symmetric(horizontal: 10.w),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.link_rounded, color: Colors.white.withValues(alpha: 0.9), size: 22.sp),
+          Icon(Icons.link_rounded,
+              color: Colors.white.withValues(alpha: 0.9), size: 22.sp),
           SizedBox(height: 6.h),
           Text(
             _domain,
@@ -390,18 +403,21 @@ class _TypeCell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (icon, label) = switch (type) {
-      ItemType.video => (Icons.videocam_rounded,          'video'),
-      ItemType.audio => (Icons.audiotrack_rounded,        'audio'),
-      ItemType.text  => (Icons.text_fields_rounded,       'text'),
-      ItemType.file  => (Icons.insert_drive_file_rounded, 'file'),
-      _              => (Icons.folder_rounded,             'item'),
+      ItemType.video => (Icons.videocam_rounded, 'video'),
+      ItemType.audio => (Icons.audiotrack_rounded, 'audio'),
+      ItemType.text => (Icons.text_fields_rounded, 'text'),
+      ItemType.file => (Icons.insert_drive_file_rounded, 'file'),
+      _ => (Icons.folder_rounded, 'item'),
     };
     return Container(
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [color.withValues(alpha: 0.80), color.withValues(alpha: 0.60)],
+          colors: [
+            color.withValues(alpha: 0.80),
+            color.withValues(alpha: 0.60)
+          ],
         ),
       ),
       padding: EdgeInsets.symmetric(horizontal: 10.w),
@@ -433,10 +449,14 @@ class _Thumb extends StatelessWidget {
     final isNet = path.startsWith('http');
     return SizedBox.expand(
       child: isNet
-          ? Image.network(path, fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(color: AppColors.cardHover))
-          : Image.file(File(path), fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(color: AppColors.cardHover)),
+          ? Image.network(path,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) =>
+                  Container(color: AppColors.cardHover))
+          : Image.file(File(path),
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) =>
+                  Container(color: AppColors.cardHover)),
     );
   }
 }
@@ -468,71 +488,83 @@ class _ColorFill extends StatelessWidget {
 
 class _CardInfo extends StatelessWidget {
   final AnchorModel anchor;
-  final List<ItemType> contentTypes;
-  const _CardInfo({required this.anchor, this.contentTypes = const []});
+  final List<AnchorItemModel> items;
+  const _CardInfo({required this.anchor, required this.items});
 
-  static IconData _iconFor(ItemType t) => switch (t) {
+  static IconData _iconFor(ItemType type) => switch (type) {
         ItemType.image => Icons.image_rounded,
-        ItemType.link  => Icons.link_rounded,
-        ItemType.text  => Icons.notes_rounded,
         ItemType.video => Icons.videocam_rounded,
         ItemType.audio => Icons.audiotrack_rounded,
-        ItemType.file  => Icons.insert_drive_file_rounded,
+        ItemType.text => Icons.text_fields_rounded,
+        ItemType.file => Icons.insert_drive_file_rounded,
+        ItemType.link => Icons.link_rounded,
       };
 
   @override
   Widget build(BuildContext context) {
-    final countLabel = anchor.itemCount == 0
-        ? 'Empty'
-        : '${anchor.itemCount} item${anchor.itemCount == 1 ? '' : 's'}';
+    final uniqueTypes = items.map((e) => e.type).toSet().toList();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisAlignment: MainAxisAlignment.center,
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Text(
-          anchor.name,
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 15.sp,
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.2,
-          ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        SizedBox(height: 6.h),
-        Row(
-          children: [
-            Text(
-              countLabel,
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.75),
-                fontSize: 12.sp,
-                fontWeight: FontWeight.w400,
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                anchor.name,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 15.sp,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.2,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-            ),
-            if (contentTypes.isNotEmpty) ...[
-              const Spacer(),
-              ...contentTypes.take(5).map((t) => Padding(
-                    padding: EdgeInsets.only(left: 5.w),
-                    child: Container(
-                      width: 22.r,
-                      height: 22.r,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.20),
-                        borderRadius: BorderRadius.circular(6.r),
-                      ),
-                      child: Icon(
-                        _iconFor(t),
-                        color: Colors.white.withValues(alpha: 0.85),
-                        size: 11.sp,
-                      ),
-                    ),
-                  )),
+              SizedBox(height: 2.h),
+              Text(
+                anchor.itemCount == 0
+                    ? 'Empty'
+                    : '${anchor.itemCount} item${anchor.itemCount == 1 ? '' : 's'}',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.75),
+                  fontSize: 12.sp,
+                  fontWeight: FontWeight.w400,
+                ),
+              ),
             ],
-          ],
+          ),
         ),
+        if (uniqueTypes.isNotEmpty) ...[
+          SizedBox(width: 8.w),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: uniqueTypes.take(4).map((type) {
+              return Padding(
+                padding: EdgeInsets.only(left: 6.w),
+                child: Container(
+                  width: 28.r,
+                  height: 28.r,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(8.r),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.28),
+                      width: 1,
+                    ),
+                  ),
+                  child: Icon(
+                    _iconFor(type),
+                    color: Colors.white.withValues(alpha: 0.90),
+                    size: 14.sp,
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
       ],
     );
   }
@@ -546,13 +578,14 @@ Route<void> _anchorRoute(AnchorModel anchor) {
     transitionDuration: const Duration(milliseconds: 320),
     reverseTransitionDuration: const Duration(milliseconds: 260),
     transitionsBuilder: (_, animation, __, child) {
-      final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+      final curved =
+          CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
       return FadeTransition(
         opacity: Tween<double>(begin: 0.0, end: 1.0).animate(curved),
         child: SlideTransition(
-          position: Tween<Offset>(
-              begin: const Offset(0, 0.04), end: Offset.zero)
-              .animate(curved),
+          position:
+              Tween<Offset>(begin: const Offset(0, 0.04), end: Offset.zero)
+                  .animate(curved),
           child: child,
         ),
       );
@@ -572,7 +605,8 @@ class _EmptyState extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 80.r, height: 80.r,
+            width: 80.r,
+            height: 80.r,
             decoration: const BoxDecoration(
               color: AppColors.accentDim,
               shape: BoxShape.circle,
@@ -588,8 +622,8 @@ class _EmptyState extends StatelessWidget {
                   fontWeight: FontWeight.w700)),
           SizedBox(height: 8.h),
           Text('Tap + to create your first anchor',
-              style: TextStyle(
-                  color: AppColors.textSecondary, fontSize: 14.sp)),
+              style:
+                  TextStyle(color: AppColors.textSecondary, fontSize: 14.sp)),
         ],
       ),
     );
@@ -603,8 +637,8 @@ class _ErrorState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Text(message,
-          style: const TextStyle(color: AppColors.textSecondary)),
+      child:
+          Text(message, style: const TextStyle(color: AppColors.textSecondary)),
     );
   }
 }
