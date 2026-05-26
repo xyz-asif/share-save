@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_screenutil/flutter_screenutil.dart';
 import '../../core/theme.dart';
 import '../../models/anchor_item_model.dart';
 import '../../models/anchor_model.dart';
@@ -13,17 +14,43 @@ import '../create_anchor/create_anchor_sheet.dart';
 
 // ─── Screen ──────────────────────────────────────────────────────────────────
 
-class HomeScreen extends ConsumerWidget {
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends ConsumerState<HomeScreen>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      ref.invalidate(anchorsProvider);
+      ref.invalidate(anchorPreviewProvider);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final anchorsAsync = ref.watch(anchorsProvider);
 
     return Scaffold(
       backgroundColor: AppColors.bg,
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _createAnchor(context, ref),
+        onPressed: _createAnchor,
         backgroundColor: AppColors.accent,
         elevation: 6,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
@@ -56,7 +83,7 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
-  Future<void> _createAnchor(BuildContext context, WidgetRef ref) async {
+  Future<void> _createAnchor() async {
     HapticFeedback.lightImpact();
     final anchor = await showModalBottomSheet<AnchorModel>(
       context: context,
@@ -79,39 +106,39 @@ class _SliverHeader extends StatelessWidget {
       backgroundColor: AppColors.bg,
       surfaceTintColor: Colors.transparent,
       pinned: true,
-      toolbarHeight: 64,
+      toolbarHeight: 64.h,
       automaticallyImplyLeading: false,
-      titleSpacing: 20,
+      titleSpacing: 20.w,
       title: Row(children: [
         Container(
-          width: 30, height: 30,
+          width: 30.r, height: 30.r,
           decoration: BoxDecoration(
             gradient: const LinearGradient(
               colors: [AppColors.accent, AppColors.accentSoft],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
-            borderRadius: BorderRadius.circular(9),
+            borderRadius: BorderRadius.circular(9.r),
             boxShadow: [
               BoxShadow(
                 color: AppColors.accent.withValues(alpha: 0.35),
                 blurRadius: 10, offset: const Offset(0, 4)),
             ],
           ),
-          child: const Icon(Icons.anchor_rounded, color: Colors.white, size: 17),
+          child: Icon(Icons.anchor_rounded, color: Colors.white, size: 17.sp),
         ),
-        const SizedBox(width: 10),
-        const Text('Anchor',
+        SizedBox(width: 10.w),
+        Text('Anchor',
             style: TextStyle(
               color: AppColors.textPrimary,
-              fontSize: 22,
+              fontSize: 22.sp,
               fontWeight: FontWeight.w800,
               letterSpacing: -0.5,
             )),
       ]),
       bottom: PreferredSize(
-        preferredSize: const Size.fromHeight(1),
-        child: Container(height: 1, color: AppColors.divider),
+        preferredSize: Size.fromHeight(1.h),
+        child: Container(height: 1.h, color: AppColors.divider),
       ),
     );
   }
@@ -126,11 +153,11 @@ class _AnchorList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SliverPadding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 100),
+      padding: EdgeInsets.fromLTRB(16.w, 20.h, 16.w, 100.h),
       sliver: SliverList(
         delegate: SliverChildBuilderDelegate(
           (ctx, i) => Padding(
-            padding: const EdgeInsets.only(bottom: 14),
+            padding: EdgeInsets.only(bottom: 14.h),
             child: _AnchorCard(anchor: anchors[i]),
           ),
           childCount: anchors.length,
@@ -173,9 +200,9 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
         child: Container(
-          height: 200,
+          height: 160.h,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
+            borderRadius: BorderRadius.circular(22.r),
             color: widget.anchor.color.withValues(alpha: 0.12),
             border: Border.all(
               color: widget.anchor.color.withValues(alpha: 0.35),
@@ -191,7 +218,7 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
             ],
           ),
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(21),
+            borderRadius: BorderRadius.circular(21.r),
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -199,17 +226,17 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
                 if (items.isNotEmpty)
                   _PreviewBackground(items: items, color: widget.anchor.color),
                 Positioned(
-                  left: 0, right: 0, bottom: 0, height: 96,
+                  left: 0, right: 0, bottom: 0, height: 96.h,
                   child: ClipRRect(
-                    borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(20),
+                    borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(20.r),
                     ),
                     child: BackdropFilter(
                       filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                       child: Container(
-                        color: widget.anchor.color.withValues(alpha: 0.12),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 18),
+                        color: widget.anchor.color.withValues(alpha: 0.02),
+                        padding: EdgeInsets.symmetric(
+                            horizontal: 16.w, vertical: 18.h),
                         child: _CardInfo(anchor: widget.anchor),
                       ),
                     ),
@@ -242,15 +269,15 @@ class _PreviewBackground extends StatelessWidget {
 
       if (count == 1) {
         return Padding(
-          padding: EdgeInsets.fromLTRB(totalW * 0.15, 10, totalW * 0.15, 0),
+          padding: EdgeInsets.fromLTRB(totalW * 0.15, 10.h, totalW * 0.15, 0),
           child: _styledSlot(slots[0], 0),
         );
       }
 
       // Horizontal padding keeps edge items inside the card's rounded border
-      const double hPad = 12.0;
+      final double hPad = 12.w;
       final double availW = totalW - 2 * hPad;
-      final double itemW = availW / count + 28;
+      final double itemW = availW / count + 14.w;
       final double step = (availW - itemW) / (count - 1);
 
       return Stack(
@@ -259,7 +286,7 @@ class _PreviewBackground extends StatelessWidget {
           for (int i = 0; i < slots.length; i++)
             Positioned(
               left: hPad + step * i,
-              top: 10,
+              top: 10.h,
               bottom: 0,
               width: itemW,
               child: _styledSlot(slots[i], i),
@@ -274,7 +301,7 @@ class _PreviewBackground extends StatelessWidget {
       angle: _angles[index % _angles.length] * math.pi / 180,
       child: Container(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(20.r),
           border: Border.all(color: Colors.white, width: 1.8),
           boxShadow: [
             BoxShadow(
@@ -283,7 +310,7 @@ class _PreviewBackground extends StatelessWidget {
           ],
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(18.r),
           child: switch (item.type) {
             ItemType.image => _Thumb(path: item.content),
             ItemType.link  => _LinkCell(url: item.content, color: color),
@@ -315,17 +342,17 @@ class _LinkCell extends StatelessWidget {
           colors: [color.withValues(alpha: 0.80), color.withValues(alpha: 0.60)],
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: EdgeInsets.symmetric(horizontal: 10.w),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.link_rounded, color: Colors.white.withValues(alpha: 0.9), size: 22),
-          const SizedBox(height: 6),
+          Icon(Icons.link_rounded, color: Colors.white.withValues(alpha: 0.9), size: 22.sp),
+          SizedBox(height: 6.h),
           Text(
             _domain,
             style: TextStyle(
               color: Colors.white.withValues(alpha: 0.95),
-              fontSize: 10,
+              fontSize: 10.sp,
               fontWeight: FontWeight.w600,
             ),
             maxLines: 2,
@@ -360,17 +387,17 @@ class _TypeCell extends StatelessWidget {
           colors: [color.withValues(alpha: 0.80), color.withValues(alpha: 0.60)],
         ),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: EdgeInsets.symmetric(horizontal: 10.w),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, color: Colors.white.withValues(alpha: 0.9), size: 24),
-          const SizedBox(height: 6),
+          Icon(icon, color: Colors.white.withValues(alpha: 0.9), size: 24.sp),
+          SizedBox(height: 6.h),
           Text(
             label,
             style: TextStyle(
               color: Colors.white.withValues(alpha: 0.95),
-              fontSize: 10,
+              fontSize: 10.sp,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -434,23 +461,23 @@ class _CardInfo extends StatelessWidget {
       children: [
         Text(
           anchor.name,
-          style: const TextStyle(
+          style: TextStyle(
             color: Colors.white,
-            fontSize: 15,
+            fontSize: 15.sp,
             fontWeight: FontWeight.w700,
             letterSpacing: -0.2,
           ),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        const SizedBox(height: 2),
+        SizedBox(height: 2.h),
         Text(
           anchor.itemCount == 0
               ? 'Empty'
               : '${anchor.itemCount} item${anchor.itemCount == 1 ? '' : 's'}',
           style: TextStyle(
             color: Colors.white.withValues(alpha: 0.75),
-            fontSize: 12,
+            fontSize: 12.sp,
             fontWeight: FontWeight.w400,
           ),
         ),
@@ -493,24 +520,24 @@ class _EmptyState extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 80, height: 80,
+            width: 80.r, height: 80.r,
             decoration: const BoxDecoration(
               color: AppColors.accentDim,
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.anchor_rounded,
-                size: 40, color: AppColors.accent),
+            child: Icon(Icons.anchor_rounded,
+                size: 40.sp, color: AppColors.accent),
           ),
-          const SizedBox(height: 20),
-          const Text('No anchors yet',
+          SizedBox(height: 20.h),
+          Text('No anchors yet',
               style: TextStyle(
                   color: AppColors.textPrimary,
-                  fontSize: 18,
+                  fontSize: 18.sp,
                   fontWeight: FontWeight.w700)),
-          const SizedBox(height: 8),
-          const Text('Tap + to create your first anchor',
+          SizedBox(height: 8.h),
+          Text('Tap + to create your first anchor',
               style: TextStyle(
-                  color: AppColors.textSecondary, fontSize: 14)),
+                  color: AppColors.textSecondary, fontSize: 14.sp)),
         ],
       ),
     );
