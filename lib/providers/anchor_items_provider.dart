@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/database.dart';
 import '../models/anchor_item_model.dart';
+import 'anchors_provider.dart';
 
 class AnchorItemsNotifier
     extends FamilyAsyncNotifier<List<AnchorItemModel>, String> {
@@ -13,6 +14,7 @@ class AnchorItemsNotifier
     state = AsyncData(
       (state.valueOrNull ?? []).where((i) => i.id != itemId).toList(),
     );
+    ref.invalidate(anchorPreviewProvider(arg));
   }
 
   Future<void> refresh() async {

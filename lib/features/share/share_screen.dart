@@ -115,6 +115,7 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
         }
       }
       ref.invalidate(anchorsProvider);
+      ref.invalidate(anchorPreviewProvider(_selectedAnchor!.id));
       _close();
     } finally {
       if (mounted) setState(() => _saving = false);

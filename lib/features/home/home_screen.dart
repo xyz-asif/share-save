@@ -206,7 +206,7 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
         duration: const Duration(milliseconds: 120),
         curve: Curves.easeOut,
         child: Container(
-          height: 160.h,
+          height: 150.h,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(22.r),
             color: widget.anchor.color.withValues(alpha: 0.12),
@@ -291,7 +291,7 @@ class _PreviewBackground extends StatelessWidget {
 
       if (count == 1) {
         return Padding(
-          padding: EdgeInsets.fromLTRB(totalW * 0.15, 16.h, totalW * 0.15, 48.h),
+          padding: EdgeInsets.fromLTRB(totalW * 0.15, 8.h, totalW * 0.15, 36.h),
           child: _styledSlot(slots[0], 0),
         );
       }
@@ -308,8 +308,8 @@ class _PreviewBackground extends StatelessWidget {
           for (int i = 0; i < slots.length; i++)
             Positioned(
               left: hPad + step * i,
-              top: 16.h,
-              bottom: 48.h,
+              top: 8.h,
+              bottom: 36.h,
               width: itemW,
               child: _styledSlot(slots[i], i),
             ),

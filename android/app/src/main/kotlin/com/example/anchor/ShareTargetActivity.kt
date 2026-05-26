@@ -21,9 +21,14 @@ class ShareTargetActivity : FlutterActivity() {
         const val CHANNEL = "com.example.anchor/share"
     }
 
-    // I/O off the main thread — content resolver reads can block
     private val ioExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Extracted data is prepared in parallel with Flutter engine startup so
+    // getSharedData responds instantly instead of blocking on file I/O.
+    private var extractedData: Map<String, Any?>? = null
+    private var dataReady = false
+    private var pendingResult: MethodChannel.Result? = null
 
     override fun getRenderMode(): RenderMode = RenderMode.texture
     override fun getBackgroundMode(): BackgroundMode = BackgroundMode.transparent
@@ -32,14 +37,26 @@ class ShareTargetActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
+        // Start file extraction immediately — runs in parallel with Flutter startup
+        ioExecutor.execute {
+            val data = extractSharedData()
+            mainHandler.post {
+                extractedData = data
+                dataReady = true
+                pendingResult?.success(data)
+                pendingResult = null
+            }
+        }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "getSharedData" -> {
-                        // File copies happen on a background thread; result posted back on main thread
-                        ioExecutor.execute {
-                            val data = extractSharedData()
-                            mainHandler.post { result.success(data) }
+                        if (dataReady) {
+                            result.success(extractedData)
+                        } else {
+                            // Flutter beat the I/O thread — reply as soon as data arrives
+                            pendingResult = result
                         }
                     }
                     "close" -> {
