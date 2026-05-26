@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -23,6 +24,10 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
+  String _searchQuery = '';
+  bool _sortReversed = false;
+  int _selectedTab = 0;
+
   @override
   void initState() {
     super.initState();
@@ -51,35 +56,69 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       backgroundColor: AppColors.bg,
       floatingActionButton: FloatingActionButton(
         onPressed: _createAnchor,
-        backgroundColor: AppColors.accent,
-        elevation: 6,
+        backgroundColor: Colors.black,
+        elevation: 0,
+        highlightElevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        child: const Icon(Icons.add_rounded, color: Colors.white, size: 28),
+        child: const Icon(Icons.anchor_rounded, color: Colors.white, size: 26),
       ),
-      body: RefreshIndicator(
-        color: AppColors.accent,
-        backgroundColor: AppColors.surface,
-        onRefresh: () => ref.read(anchorsProvider.notifier).refresh(),
-        child: CustomScrollView(
-          physics: const BouncingScrollPhysics(
-              parent: AlwaysScrollableScrollPhysics()),
-          slivers: [
-            const _SliverHeader(),
-            anchorsAsync.when(
-              loading: () => const SliverFillRemaining(
-                child: Center(
-                    child: CircularProgressIndicator(
-                        color: AppColors.accent, strokeWidth: 2)),
-              ),
-              error: (e, _) => SliverFillRemaining(
-                child: _ErrorState(message: '$e'),
-              ),
-              data: (anchors) => anchors.isEmpty
-                  ? const SliverFillRemaining(child: _EmptyState())
-                  : _AnchorList(anchors: anchors),
+      body: Stack(
+        children: [
+          RefreshIndicator(
+            color: AppColors.accent,
+            backgroundColor: AppColors.surface,
+            onRefresh: () => ref.read(anchorsProvider.notifier).refresh(),
+            child: CustomScrollView(
+              physics: const BouncingScrollPhysics(
+                  parent: AlwaysScrollableScrollPhysics()),
+              slivers: [
+                _SliverHeader(
+                  onSearchChanged: (q) => setState(() => _searchQuery = q),
+                  sortReversed: _sortReversed,
+                  onSortToggle: () =>
+                      setState(() => _sortReversed = !_sortReversed),
+                ),
+                anchorsAsync.when(
+                  loading: () => const SliverFillRemaining(
+                    child: Center(
+                        child: CircularProgressIndicator(
+                            color: AppColors.accent, strokeWidth: 2)),
+                  ),
+                  error: (e, _) => SliverFillRemaining(
+                    child: _ErrorState(message: '$e'),
+                  ),
+                  data: (anchors) {
+                    var list = _searchQuery.isEmpty
+                        ? anchors
+                        : anchors
+                            .where((a) => a.name
+                                .toLowerCase()
+                                .contains(_searchQuery.toLowerCase()))
+                            .toList();
+                    if (_sortReversed) list = list.reversed.toList();
+                    if (list.isEmpty) {
+                      return const SliverFillRemaining(child: _EmptyState());
+                    }
+                    return SliverToBoxAdapter(
+                      child: _AnchorListColumn(
+                        key: ValueKey('$_sortReversed|$_searchQuery'),
+                        anchors: list,
+                      ),
+                    );
+                  },
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+          Positioned(
+            bottom: MediaQuery.of(context).padding.bottom + 16,
+            left: 20.w,
+            child: _FloatingNavBar(
+              selectedIndex: _selectedTab,
+              onTap: (i) => setState(() => _selectedTab = i),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -98,8 +137,77 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
 // ─── Header ───────────────────────────────────────────────────────────────────
 
-class _SliverHeader extends StatelessWidget {
-  const _SliverHeader();
+class _SliverHeader extends StatefulWidget {
+  final ValueChanged<String> onSearchChanged;
+  final bool sortReversed;
+  final VoidCallback onSortToggle;
+
+  const _SliverHeader({
+    required this.onSearchChanged,
+    required this.sortReversed,
+    required this.onSortToggle,
+  });
+
+  @override
+  State<_SliverHeader> createState() => _SliverHeaderState();
+}
+
+class _SliverHeaderState extends State<_SliverHeader>
+    with TickerProviderStateMixin {
+  bool _searchOpen = false;
+  final _searchCtrl = TextEditingController();
+  final _searchFocus = FocusNode();
+  late final AnimationController _searchAnim;
+  late final AnimationController _sortAnim;
+  late final Animation<double> _searchFade;
+  late final Animation<Offset> _searchSlide;
+  late final Animation<double> _sortRotation;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchAnim = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 260));
+    _sortAnim = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 350));
+    _searchFade =
+        CurvedAnimation(parent: _searchAnim, curve: Curves.easeOut);
+    _searchSlide = Tween<Offset>(
+            begin: const Offset(0.15, 0), end: Offset.zero)
+        .animate(CurvedAnimation(parent: _searchAnim, curve: Curves.easeOut));
+    _sortRotation = Tween<double>(begin: 0, end: 0.5)
+        .animate(CurvedAnimation(parent: _sortAnim, curve: Curves.easeInOut));
+  }
+
+  @override
+  void didUpdateWidget(_SliverHeader old) {
+    super.didUpdateWidget(old);
+    if (widget.sortReversed != old.sortReversed) {
+      widget.sortReversed ? _sortAnim.forward() : _sortAnim.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    _searchFocus.dispose();
+    _searchAnim.dispose();
+    _sortAnim.dispose();
+    super.dispose();
+  }
+
+  void _toggleSearch() {
+    setState(() => _searchOpen = !_searchOpen);
+    if (_searchOpen) {
+      _searchAnim.forward();
+      _searchFocus.requestFocus();
+    } else {
+      _searchAnim.reverse();
+      _searchFocus.unfocus();
+      _searchCtrl.clear();
+      widget.onSearchChanged('');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -109,39 +217,124 @@ class _SliverHeader extends StatelessWidget {
       pinned: true,
       toolbarHeight: 64.h,
       automaticallyImplyLeading: false,
-      titleSpacing: 20.w,
-      title: Row(children: [
-        Container(
-          width: 30.r,
-          height: 30.r,
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [AppColors.accent, AppColors.accentSoft],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(9.r),
-            boxShadow: [
-              BoxShadow(
-                  color: AppColors.accent.withValues(alpha: 0.35),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4)),
-            ],
-          ),
-          child: Icon(Icons.anchor_rounded, color: Colors.white, size: 17.sp),
-        ),
-        SizedBox(width: 10.w),
-        Text('Anchor',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 22.sp,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -0.5,
-            )),
-      ]),
+      titleSpacing: 16.w,
+      title: _searchOpen ? _buildSearchBar() : _buildDefaultTitle(),
       bottom: PreferredSize(
         preferredSize: Size.fromHeight(1.h),
         child: Container(height: 1.h, color: AppColors.divider),
+      ),
+    );
+  }
+
+  Widget _buildDefaultTitle() {
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 19.r,
+          backgroundImage: const NetworkImage(
+            'https://api.dicebear.com/7.x/adventurer/png?seed=AnchorApp&backgroundColor=ffd5dc',
+          ),
+          backgroundColor: AppColors.surface,
+        ),
+        const Spacer(),
+        _HeaderIconBtn(icon: CupertinoIcons.search, onTap: _toggleSearch),
+        SizedBox(width: 8.w),
+        RotationTransition(
+          turns: _sortRotation,
+          child: _HeaderIconBtn(
+            icon: CupertinoIcons.arrow_up_arrow_down,
+            onTap: () {
+              HapticFeedback.selectionClick();
+              widget.onSortToggle();
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return FadeTransition(
+      opacity: _searchFade,
+      child: SlideTransition(
+        position: _searchSlide,
+        child: Row(
+          children: [
+            GestureDetector(
+              onTap: _toggleSearch,
+              child: Icon(CupertinoIcons.xmark_circle_fill,
+                  color: AppColors.textTertiary, size: 22.sp),
+            ),
+            SizedBox(width: 10.w),
+            Expanded(
+              child: Container(
+                height: 40.h,
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(24.r),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                padding: EdgeInsets.symmetric(horizontal: 14.w),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _searchCtrl,
+                        focusNode: _searchFocus,
+                        onChanged: widget.onSearchChanged,
+                        style: TextStyle(
+                            color: AppColors.textPrimary, fontSize: 14.sp),
+                        decoration: InputDecoration(
+                          hintText: 'Search...',
+                          hintStyle: TextStyle(
+                              color: AppColors.textTertiary, fontSize: 14.sp),
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          filled: false,
+                          isDense: true,
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                      ),
+                    ),
+                    SizedBox(width: 8.w),
+                    Icon(CupertinoIcons.search,
+                        color: AppColors.accent, size: 16.sp),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HeaderIconBtn extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  const _HeaderIconBtn({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 36.r,
+        height: 36.r,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          shape: BoxShape.circle,
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Icon(icon, color: AppColors.textPrimary, size: 16.sp),
       ),
     );
   }
@@ -149,22 +342,61 @@ class _SliverHeader extends StatelessWidget {
 
 // ─── List ─────────────────────────────────────────────────────────────────────
 
-class _AnchorList extends StatelessWidget {
+class _AnchorListColumn extends StatefulWidget {
   final List<AnchorModel> anchors;
-  const _AnchorList({required this.anchors});
+  const _AnchorListColumn({required this.anchors, super.key});
+
+  @override
+  State<_AnchorListColumn> createState() => _AnchorListColumnState();
+}
+
+class _AnchorListColumnState extends State<_AnchorListColumn>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 750),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return SliverPadding(
+    return Padding(
       padding: EdgeInsets.fromLTRB(16.w, 20.h, 16.w, 100.h),
-      sliver: SliverList(
-        delegate: SliverChildBuilderDelegate(
-          (ctx, i) => Padding(
-            padding: EdgeInsets.only(bottom: 14.h),
-            child: _AnchorCard(anchor: anchors[i]),
-          ),
-          childCount: anchors.length,
-        ),
+      child: Column(
+        children: [
+          for (int i = 0; i < widget.anchors.length; i++)
+            _buildCard(i),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCard(int i) {
+    final start = (i * 0.07).clamp(0.0, 0.65);
+    final end = (start + 0.35).clamp(0.0, 1.0);
+    final anim = CurvedAnimation(
+      parent: _ctrl,
+      curve: Interval(start, end, curve: Curves.easeOutCubic),
+    );
+    return Padding(
+      padding: EdgeInsets.only(bottom: 14.h),
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0, 0.18),
+          end: Offset.zero,
+        ).animate(anim),
+        child: _AnchorCard(anchor: widget.anchors[i]),
       ),
     );
   }
@@ -376,7 +608,7 @@ class _LinkCell extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.link_rounded,
+          Icon(CupertinoIcons.link,
               color: Colors.white.withValues(alpha: 0.9), size: 22.sp),
           SizedBox(height: 6.h),
           Text(
@@ -404,11 +636,11 @@ class _TypeCell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (icon, label) = switch (type) {
-      ItemType.video => (Icons.videocam_rounded, 'video'),
-      ItemType.audio => (Icons.audiotrack_rounded, 'audio'),
-      ItemType.text => (Icons.text_fields_rounded, 'text'),
-      ItemType.file => (Icons.insert_drive_file_rounded, 'file'),
-      _ => (Icons.folder_rounded, 'item'),
+      ItemType.video => (CupertinoIcons.video_camera, 'video'),
+      ItemType.audio => (CupertinoIcons.music_note, 'audio'),
+      ItemType.text => (CupertinoIcons.textformat, 'text'),
+      ItemType.file => (CupertinoIcons.doc, 'file'),
+      _ => (CupertinoIcons.folder, 'item'),
     };
     return Container(
       decoration: BoxDecoration(
@@ -493,12 +725,12 @@ class _CardInfo extends StatelessWidget {
   const _CardInfo({required this.anchor, required this.items});
 
   static IconData _iconFor(ItemType type) => switch (type) {
-        ItemType.image => Icons.image_rounded,
-        ItemType.video => Icons.videocam_rounded,
-        ItemType.audio => Icons.audiotrack_rounded,
-        ItemType.text => Icons.text_fields_rounded,
-        ItemType.file => Icons.insert_drive_file_rounded,
-        ItemType.link => Icons.link_rounded,
+        ItemType.image => CupertinoIcons.photo,
+        ItemType.video => CupertinoIcons.video_camera,
+        ItemType.audio => CupertinoIcons.music_note,
+        ItemType.text => CupertinoIcons.textformat,
+        ItemType.file => CupertinoIcons.doc,
+        ItemType.link => CupertinoIcons.link,
       };
 
   @override
@@ -592,6 +824,153 @@ Route<void> _anchorRoute(AnchorModel anchor) {
       );
     },
   );
+}
+
+// ─── Floating nav bar ─────────────────────────────────────────────────────────
+
+class _FloatingNavBar extends StatelessWidget {
+  final int selectedIndex;
+  final ValueChanged<int> onTap;
+  const _FloatingNavBar({required this.selectedIndex, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(40.r),
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: Container(
+          padding: EdgeInsets.all(5.r),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.68),
+            borderRadius: BorderRadius.circular(40.r),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.90),
+              width: 1.2,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.08),
+                blurRadius: 20,
+                offset: const Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _NavItem(
+                icon: CupertinoIcons.rectangle_grid_2x2,
+                index: 0,
+                selectedIndex: selectedIndex,
+                onTap: onTap,
+              ),
+              SizedBox(width: 4.w),
+              _NavItem(
+                icon: CupertinoIcons.person_2,
+                index: 1,
+                selectedIndex: selectedIndex,
+                onTap: onTap,
+              ),
+              SizedBox(width: 4.w),
+              _NavItem(
+                icon: CupertinoIcons.doc_text,
+                index: 2,
+                selectedIndex: selectedIndex,
+                onTap: onTap,
+                hasBadge: true,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NavItem extends StatelessWidget {
+  final IconData icon;
+  final int index;
+  final int selectedIndex;
+  final ValueChanged<int> onTap;
+  final bool hasBadge;
+
+  const _NavItem({
+    required this.icon,
+    required this.index,
+    required this.selectedIndex,
+    required this.onTap,
+    this.hasBadge = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isSelected = index == selectedIndex;
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap(index);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        width: 40.r,
+        height: 40.r,
+        decoration: BoxDecoration(
+          color: isSelected
+              ? Colors.white.withValues(alpha: 0.60)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(24.r),
+          border: isSelected
+              ? Border.all(
+                  color: Colors.white.withValues(alpha: 0.85),
+                  width: 1.0,
+                )
+              : null,
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: Colors.white.withValues(alpha: 0.50),
+                    blurRadius: 8,
+                    spreadRadius: 0,
+                  ),
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.06),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ]
+              : null,
+        ),
+        child: Stack(
+          children: [
+            Center(
+              child: Icon(
+                icon,
+                size: 20.sp,
+                color: isSelected
+                    ? AppColors.textPrimary
+                    : AppColors.textSecondary,
+              ),
+            ),
+            if (hasBadge)
+              Positioned(
+                top: 7.h,
+                right: 7.w,
+                child: Container(
+                  width: 7.r,
+                  height: 7.r,
+                  decoration: const BoxDecoration(
+                    color: AppColors.accent,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 // ─── Empty / error states ─────────────────────────────────────────────────────
