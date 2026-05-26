@@ -23,24 +23,37 @@ class AnchorDetailScreen extends ConsumerStatefulWidget {
   ConsumerState<AnchorDetailScreen> createState() => _AnchorDetailScreenState();
 }
 
-class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen> {
+class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
+    with SingleTickerProviderStateMixin {
   final _scrollCtrl = ScrollController();
-  bool _titleVisible = false;
+  late final AnimationController _animCtrl;
+  late final Animation<double> _appBarFade;
+  late final Animation<Offset> _appBarSlide;
 
   @override
   void initState() {
     super.initState();
-    _scrollCtrl.addListener(_onScroll);
-  }
-
-  void _onScroll() {
-    final visible = _scrollCtrl.offset > 80.h;
-    if (visible != _titleVisible) setState(() => _titleVisible = visible);
+    _animCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 750),
+    )..forward();
+    _appBarFade = CurvedAnimation(
+      parent: _animCtrl,
+      curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
+    );
+    _appBarSlide = Tween<Offset>(
+      begin: const Offset(0, -0.3),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _animCtrl,
+      curve: const Interval(0.0, 0.6, curve: Curves.easeOutCubic),
+    ));
   }
 
   @override
   void dispose() {
     _scrollCtrl.dispose();
+    _animCtrl.dispose();
     super.dispose();
   }
 
@@ -48,7 +61,6 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen> {
   Widget build(BuildContext context) {
     final anchor = widget.anchor;
     final itemsAsync = ref.watch(anchorItemsProvider(anchor.id));
-    final count = itemsAsync.valueOrNull?.length ?? anchor.itemCount;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -63,7 +75,6 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen> {
               parent: AlwaysScrollableScrollPhysics()),
           slivers: [
             _buildAppBar(anchor),
-            _buildHero(anchor, count),
             itemsAsync.when(
               loading: () => const SliverFillRemaining(
                 child: Center(
@@ -120,34 +131,21 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen> {
           ),
         ),
       ),
-      title: AnimatedOpacity(
-        opacity: _titleVisible ? 1.0 : 0.0,
-        duration: const Duration(milliseconds: 180),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-            width: 22.r,
-            height: 22.r,
-            decoration: BoxDecoration(
-              color: anchor.color.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(6.r),
+      title: FadeTransition(
+        opacity: _appBarFade,
+        child: SlideTransition(
+          position: _appBarSlide,
+          child: Text(
+            anchor.name,
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 17.sp,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.3,
             ),
-            child:
-                Icon(Icons.anchor_rounded, color: anchor.color, size: 12.sp),
+            overflow: TextOverflow.ellipsis,
           ),
-          SizedBox(width: 8.w),
-          Flexible(
-            child: Text(
-              anchor.name,
-              style: TextStyle(
-                color: AppColors.textPrimary,
-                fontSize: 16.sp,
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.3,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ]),
+        ),
       ),
       actions: [
         GestureDetector(
@@ -167,83 +165,7 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen> {
       ],
       bottom: PreferredSize(
         preferredSize: Size.fromHeight(1.h),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          height: 1.h,
-          color: _titleVisible ? AppColors.divider : Colors.transparent,
-        ),
-      ),
-    );
-  }
-
-  // ── Hero ────────────────────────────────────────────────────────────────────
-
-  SliverToBoxAdapter _buildHero(AnchorModel anchor, int count) {
-    return SliverToBoxAdapter(
-      child: Container(
-        padding: EdgeInsets.fromLTRB(20.w, 4.h, 20.w, 28.h),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              anchor.color.withValues(alpha: 0.14),
-              anchor.color.withValues(alpha: 0.0),
-            ],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Container(
-              width: 56.r,
-              height: 56.r,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [anchor.color, anchor.color.withValues(alpha: 0.72)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(17.r),
-                boxShadow: [
-                  BoxShadow(
-                      color: anchor.color.withValues(alpha: 0.38),
-                      blurRadius: 14,
-                      offset: const Offset(0, 5)),
-                ],
-              ),
-              child:
-                  Icon(Icons.anchor_rounded, color: Colors.white, size: 27.sp),
-            ),
-            SizedBox(width: 16.w),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    anchor.name,
-                    style: TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 24.sp,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.6,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  SizedBox(height: 4.h),
-                  Text(
-                    count == 0
-                        ? 'Nothing saved yet'
-                        : '$count item${count == 1 ? '' : 's'} saved',
-                    style: TextStyle(
-                        color: AppColors.textSecondary, fontSize: 13.sp),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
+        child: Container(height: 1.h, color: AppColors.divider),
       ),
     );
   }
@@ -285,23 +207,43 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen> {
 
   // ── Grid ────────────────────────────────────────────────────────────────────
 
+  static const _imgRatios = [0.65, 0.85, 0.72, 1.05, 0.60, 0.90, 0.78, 1.12];
+
   Widget _buildGrid(List<AnchorItemModel> items, AnchorModel anchor) {
     return SliverPadding(
-      padding: EdgeInsets.fromLTRB(14.w, 0, 14.w, 100.h),
+      padding: EdgeInsets.fromLTRB(12.w, 8.h, 12.w, 100.h),
       sliver: SliverMasonryGrid.count(
         crossAxisCount: 2,
-        mainAxisSpacing: 8.h,
-        crossAxisSpacing: 8.w,
+        mainAxisSpacing: 10.h,
+        crossAxisSpacing: 10.w,
         childCount: items.length,
-        itemBuilder: (ctx, i) => _ItemCard(
-          key: ValueKey(items[i].id),
-          item: items[i],
-          anchorColor: anchor.color,
-          onTap: () => _openItem(ctx, items[i]),
-          onDelete: () => ref
-              .read(anchorItemsProvider(anchor.id).notifier)
-              .remove(items[i].id),
-        ),
+        itemBuilder: (ctx, i) {
+          final start = (i * 0.07).clamp(0.0, 0.65);
+          final end = (start + 0.35).clamp(0.0, 1.0);
+          final anim = CurvedAnimation(
+            parent: _animCtrl,
+            curve: Interval(start, end, curve: Curves.easeOutCubic),
+          );
+          return FadeTransition(
+            opacity: anim,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.12),
+                end: Offset.zero,
+              ).animate(anim),
+              child: _ItemCard(
+                key: ValueKey(items[i].id),
+                item: items[i],
+                anchorColor: anchor.color,
+                imageAspectRatio: _imgRatios[i % _imgRatios.length],
+                onTap: () => _openItem(ctx, items[i]),
+                onDelete: () => ref
+                    .read(anchorItemsProvider(anchor.id).notifier)
+                    .remove(items[i].id),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -363,6 +305,7 @@ class _ItemCard extends StatelessWidget {
   final Color anchorColor;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final double imageAspectRatio;
 
   const _ItemCard({
     super.key,
@@ -370,6 +313,7 @@ class _ItemCard extends StatelessWidget {
     required this.anchorColor,
     required this.onTap,
     required this.onDelete,
+    this.imageAspectRatio = 0.75,
   });
 
   @override
@@ -412,7 +356,7 @@ class _ItemCard extends StatelessWidget {
           ),
           clipBehavior: Clip.antiAlias,
           child: switch (item.type) {
-            ItemType.image => _ImageContent(item: item),
+            ItemType.image => _ImageContent(item: item, aspectRatio: imageAspectRatio),
             ItemType.link =>
               _LinkContent(item: item, accentColor: anchorColor),
             ItemType.text =>
@@ -440,7 +384,8 @@ class _ItemCard extends StatelessWidget {
 
 class _ImageContent extends StatelessWidget {
   final AnchorItemModel item;
-  const _ImageContent({required this.item});
+  final double aspectRatio;
+  const _ImageContent({required this.item, this.aspectRatio = 0.75});
 
   @override
   Widget build(BuildContext context) {
@@ -448,21 +393,23 @@ class _ImageContent extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        isNet
-            ? CachedNetworkImage(
-                imageUrl: item.content,
-                fit: BoxFit.cover,
-                width: double.infinity,
-                placeholder: (_, __) =>
-                    Container(height: 80.h, color: AppColors.bg),
-                errorWidget: (_, __, ___) => _BrokenImage(height: 60.h),
-              )
-            : Image.file(
-                File(item.content),
-                fit: BoxFit.cover,
-                width: double.infinity,
-                errorBuilder: (_, __, ___) => _BrokenImage(height: 80.h),
-              ),
+        AspectRatio(
+          aspectRatio: aspectRatio,
+          child: isNet
+              ? CachedNetworkImage(
+                  imageUrl: item.content,
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  placeholder: (_, __) => Container(color: AppColors.bg),
+                  errorWidget: (_, __, ___) => _BrokenImage(height: 60.h),
+                )
+              : Image.file(
+                  File(item.content),
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  errorBuilder: (_, __, ___) => _BrokenImage(height: 80.h),
+                ),
+        ),
         if (item.title != null)
           Padding(
             padding: EdgeInsets.fromLTRB(10.w, 8.h, 10.w, 10.h),

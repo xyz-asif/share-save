@@ -247,7 +247,13 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
                           color: Colors.white.withValues(alpha: 0.10),
                           padding: EdgeInsets.symmetric(
                               horizontal: 16.w, vertical: 18.h),
-                          child: _CardInfo(anchor: widget.anchor),
+                          child: _CardInfo(
+                            anchor: widget.anchor,
+                            contentTypes: items
+                                .map((e) => e.type)
+                                .toSet()
+                                .toList(),
+                          ),
                         ),
                       ),
                     ),
@@ -462,10 +468,24 @@ class _ColorFill extends StatelessWidget {
 
 class _CardInfo extends StatelessWidget {
   final AnchorModel anchor;
-  const _CardInfo({required this.anchor});
+  final List<ItemType> contentTypes;
+  const _CardInfo({required this.anchor, this.contentTypes = const []});
+
+  static IconData _iconFor(ItemType t) => switch (t) {
+        ItemType.image => Icons.image_rounded,
+        ItemType.link  => Icons.link_rounded,
+        ItemType.text  => Icons.notes_rounded,
+        ItemType.video => Icons.videocam_rounded,
+        ItemType.audio => Icons.audiotrack_rounded,
+        ItemType.file  => Icons.insert_drive_file_rounded,
+      };
 
   @override
   Widget build(BuildContext context) {
+    final countLabel = anchor.itemCount == 0
+        ? 'Empty'
+        : '${anchor.itemCount} item${anchor.itemCount == 1 ? '' : 's'}';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisAlignment: MainAxisAlignment.center,
@@ -481,16 +501,37 @@ class _CardInfo extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        SizedBox(height: 2.h),
-        Text(
-          anchor.itemCount == 0
-              ? 'Empty'
-              : '${anchor.itemCount} item${anchor.itemCount == 1 ? '' : 's'}',
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.75),
-            fontSize: 12.sp,
-            fontWeight: FontWeight.w400,
-          ),
+        SizedBox(height: 6.h),
+        Row(
+          children: [
+            Text(
+              countLabel,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.75),
+                fontSize: 12.sp,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+            if (contentTypes.isNotEmpty) ...[
+              const Spacer(),
+              ...contentTypes.take(5).map((t) => Padding(
+                    padding: EdgeInsets.only(left: 5.w),
+                    child: Container(
+                      width: 22.r,
+                      height: 22.r,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.20),
+                        borderRadius: BorderRadius.circular(6.r),
+                      ),
+                      child: Icon(
+                        _iconFor(t),
+                        color: Colors.white.withValues(alpha: 0.85),
+                        size: 11.sp,
+                      ),
+                    ),
+                  )),
+            ],
+          ],
         ),
       ],
     );
