@@ -84,11 +84,30 @@ class ShareTargetActivity : FlutterActivity() {
 
     private fun handleSingleShare(intent: Intent, type: String): Map<String, Any?> {
         if (type == "text/plain") {
-            val text = intent.getStringExtra(Intent.EXTRA_TEXT) ?: ""
+            // Trim leading/trailing whitespace that some apps accidentally include.
+            val text = (intent.getStringExtra(Intent.EXTRA_TEXT) ?: "").trim()
             val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
-            val isUrl = text.startsWith("http://") || text.startsWith("https://")
-            return mapOf("type" to if (isUrl) "link" else "text",
-                "text" to text, "subject" to subject, "mimeType" to type)
+
+            // Case 1 — the entire payload is a URL (most common: browser share).
+            if (text.startsWith("http://") || text.startsWith("https://")) {
+                return mapOf("type" to "link", "text" to text,
+                    "subject" to subject, "mimeType" to type)
+            }
+
+            // Case 2 — text contains an embedded URL (e.g. "Hoppers https://…").
+            // Extract the first URL; anything before it becomes the auto-title.
+            val urlMatch = Regex("""https?://\S+""").find(text)
+            if (urlMatch != null) {
+                val url = urlMatch.value
+                val prefix = text.substring(0, urlMatch.range.first).trim()
+                val derivedSubject = prefix.ifEmpty { null } ?: subject
+                return mapOf("type" to "link", "text" to url,
+                    "subject" to derivedSubject, "mimeType" to type)
+            }
+
+            // Case 3 — plain text, no URL found.
+            return mapOf("type" to "text", "text" to text,
+                "subject" to subject, "mimeType" to type)
         }
 
         val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)

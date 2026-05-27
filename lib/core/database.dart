@@ -202,6 +202,26 @@ class AppDatabase {
     await d.delete('anchors', where: 'id = ?', whereArgs: [id]);
   }
 
+  /// Insert an anchor that already has an ID (e.g. restored from Firestore).
+  /// Silently ignores the row if it already exists locally.
+  Future<void> upsertAnchor(AnchorModel anchor) async {
+    await (await db).insert(
+      'anchors',
+      anchor.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  /// Insert an item that already has an ID (e.g. restored from Firestore).
+  /// Silently ignores the row if it already exists locally.
+  Future<void> upsertItem(AnchorItemModel item) async {
+    await (await db).insert(
+      'anchor_items',
+      item.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
   // ── Items ─────────────────────────────────────────────────────────────────
 
   Future<List<AnchorItemModel>> getItems(String anchorId) async {

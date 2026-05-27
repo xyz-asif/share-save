@@ -386,6 +386,13 @@ class _ItemCardState extends State<_ItemCard>
     );
   }
 
+  /// True when [content] is a bare URL with no surrounding text.
+  static bool _looksLikeUrl(String content) {
+    final t = content.trim();
+    return (t.startsWith('http://') || t.startsWith('https://')) &&
+        !t.contains(' ');
+  }
+
   @override
   void didUpdateWidget(_ItemCard oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -430,6 +437,11 @@ class _ItemCardState extends State<_ItemCard>
           child: switch (widget.item.type) {
             ItemType.image => _ImageContent(item: widget.item),
             ItemType.link => _LinkContent(item: widget.item, accentColor: widget.anchorColor),
+            // Items saved before link-detection was added may be typed as 'text'
+            // even though their content is a URL.  Detect that at render time so
+            // they get the link-preview card without any DB migration.
+            ItemType.text when _looksLikeUrl(widget.item.content) =>
+              _LinkContent(item: widget.item, accentColor: widget.anchorColor),
             ItemType.text => _TextContent(item: widget.item, accentColor: widget.anchorColor),
             ItemType.video => _MediaContent(
                 item: widget.item,

@@ -45,11 +45,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    // Only refresh when returning from the share-target activity so newly
+    // shared items appear. We detect this via the 'hidden → resumed' transition
+    // (the share overlay puts the app in 'hidden', not 'paused').
+    // We do NOT invalidate on every resume — that was causing 61-frame drops
+    // on sign-in return and contributing to the MIUI ANR scout triggering.
+    if (state == AppLifecycleState.hidden) {
+      _wasHidden = true;
+    } else if (state == AppLifecycleState.resumed && _wasHidden) {
+      _wasHidden = false;
       ref.invalidate(anchorsProvider);
       ref.invalidate(anchorPreviewProvider);
     }
   }
+
+  bool _wasHidden = false;
 
   @override
   Widget build(BuildContext context) {

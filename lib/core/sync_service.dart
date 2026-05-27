@@ -7,6 +7,7 @@ import '../providers/anchors_provider.dart';
 import 'cloudinary_service.dart';
 import 'connectivity_provider.dart';
 import 'database.dart';
+import 'firestore_service.dart';
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 
@@ -125,6 +126,12 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
         cloudinaryPublicId: result.publicId,
         thumbnailUrl: thumbUrl,
       );
+
+      // Update Firestore with the CDN URLs so the image survives reinstalls.
+      final synced = await AppDatabase.instance.getItemById(item.id);
+      if (synced != null) {
+        FirestoreService.instance.saveItem(uid, synced);
+      }
     } catch (_) {
       await AppDatabase.instance.incrementRetryCount(item.id);
       // If we've hit the retry cap, mark failed; else leave as pending for

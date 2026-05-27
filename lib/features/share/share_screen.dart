@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../core/database.dart';
 import '../../core/theme.dart';
 import '../../models/anchor_item_model.dart';
 import '../../models/anchor_model.dart';
+import '../../providers/anchor_items_provider.dart';
 import '../../providers/anchors_provider.dart';
 import '../create_anchor/create_anchor_sheet.dart';
 import 'shared_data.dart';
@@ -84,16 +84,19 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
     HapticFeedback.lightImpact();
     setState(() => _saving = true);
     try {
-      final db = AppDatabase.instance;
       final data = _sharedData!;
+      final anchorId = _selectedAnchor!.id;
       final title =
           _titleCtrl.text.trim().isEmpty ? null : _titleCtrl.text.trim();
       final desc =
           _descCtrl.text.trim().isEmpty ? null : _descCtrl.text.trim();
 
+      // Use the notifier so items are saved to both SQLite and Firestore.
+      final notifier =
+          ref.read(anchorItemsProvider(anchorId).notifier);
+
       if (data.type == ItemType.link || data.type == ItemType.text) {
-        await db.createItem(
-          anchorId: _selectedAnchor!.id,
+        await notifier.addItem(
           type: data.type,
           title: title,
           description: desc,
@@ -103,8 +106,7 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
       } else {
         for (final path in data.uris) {
           if (path.isEmpty) continue;
-          await db.createItem(
-            anchorId: _selectedAnchor!.id,
+          await notifier.addItem(
             type: data.type,
             title: title,
             description: desc,
@@ -115,7 +117,6 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
         }
       }
       ref.invalidate(anchorsProvider);
-      ref.invalidate(anchorPreviewProvider(_selectedAnchor!.id));
       _close();
     } finally {
       if (mounted) setState(() => _saving = false);

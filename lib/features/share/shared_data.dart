@@ -17,14 +17,27 @@ class SharedData {
 
   factory SharedData.fromMap(Map<dynamic, dynamic> map) {
     final typeStr = map['type'] as String? ?? 'file';
-    final type = ItemTypeExt.fromString(typeStr);
+    var type = ItemTypeExt.fromString(typeStr);
+    final text = map['text'] as String?;
     final rawUris = map['uris'];
     final uris = rawUris is List
         ? rawUris.whereType<String>().toList()
         : <String>[];
+
+    // Dart-side safety net: if Android sent 'text' but the payload is a plain
+    // URL (no spaces → it really is just a URL), promote it to 'link' so the
+    // share sheet shows the link preview flow and saves it with the right type.
+    if (type == ItemType.text && text != null) {
+      final t = text.trim();
+      if ((t.startsWith('http://') || t.startsWith('https://')) &&
+          !t.contains(' ')) {
+        type = ItemType.link;
+      }
+    }
+
     return SharedData(
       type: type,
-      text: map['text'] as String?,
+      text: text,
       subject: map['subject'] as String?,
       uris: uris,
       mimeType: map['mimeType'] as String?,
