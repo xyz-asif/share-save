@@ -1,24 +1,29 @@
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'core/theme.dart';
-import 'features/home/home_screen.dart';
+import 'features/auth/auth_gate.dart';
 import 'features/share/share_screen.dart';
+import 'firebase_options.dart';
 
-void main() {
-  _init();
+void main() async {
+  await _init();
   runApp(const ProviderScope(child: AnchorApp()));
 }
 
 @pragma('vm:entry-point')
-void shareTarget() {
-  _init();
+void shareTarget() async {
+  await _init();
   runApp(const ProviderScope(child: _ShareEntryApp()));
 }
 
-void _init() {
+Future<void> _init() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
@@ -49,7 +54,7 @@ class AnchorApp extends StatelessWidget {
         theme: AppTheme.light,
         debugShowCheckedModeBanner: false,
         builder: _fixedScaleBuilder,
-        home: const HomeScreen(),
+        home: const AuthGate(),
       ),
     );
   }

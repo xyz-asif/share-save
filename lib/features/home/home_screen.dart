@@ -1,11 +1,14 @@
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import '../../core/cloudinary_service.dart';
+import '../../core/link_preview_service.dart';
 import '../../core/theme.dart';
 import '../../models/anchor_item_model.dart';
 import '../../models/anchor_model.dart';
@@ -568,8 +571,11 @@ class _PreviewBackground extends StatelessWidget {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(18.r),
           child: switch (item.type) {
-            ItemType.image => _Thumb(path: item.content),
-            ItemType.link => _LinkCell(url: item.content, color: color),
+            ItemType.image => _Thumb(item: item),
+            ItemType.link => _LinkCell(item: item, color: color),
+            // Video with any thumbnail (CDN or local) → show it like an image
+            ItemType.video when item.displayThumbnail != null =>
+              _Thumb(item: item),
             _ => _TypeCell(type: item.type, color: color),
           },
         ),
@@ -578,21 +584,90 @@ class _PreviewBackground extends StatelessWidget {
   }
 }
 
-class _LinkCell extends StatelessWidget {
-  final String url;
+class _LinkCell extends ConsumerWidget {
+  final AnchorItemModel item;
   final Color color;
-  const _LinkCell({required this.url, required this.color});
+  const _LinkCell({required this.item, required this.color});
 
   String get _domain {
     try {
-      return Uri.parse(url).host.replaceFirst('www.', '');
+      return Uri.parse(item.content).host.replaceFirst('www.', '');
     } catch (_) {
-      return url;
+      return item.content;
     }
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final preview = ref.watch(linkPreviewProvider(item.content)).valueOrNull;
+    // Prefer Cloudinary Fetch CDN (caching + transforms); fall back to raw OG URL
+    final ogCdnImage = preview?.cdnImageUrl;
+    final ogRawImage = preview?.imageUrl;
+    final ogImage = ogCdnImage ?? ogRawImage;
+
+    if (ogImage != null) {
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          // Positioned.fill gives CachedNetworkImage explicit bounded constraints
+          // so BoxFit.cover always fills and crops correctly
+          Positioned.fill(
+            child: CachedNetworkImage(
+              imageUrl: ogImage,
+              fit: BoxFit.cover,
+              placeholder: (_, __) => _fallback(),
+              // CDN failed → retry with raw OG URL before giving up
+              errorWidget: (_, __, ___) {
+                if (ogImage == ogCdnImage && ogRawImage != null) {
+                  return Image.network(
+                    ogRawImage,
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    height: double.infinity,
+                    errorBuilder: (_, __, ___) => _fallback(),
+                  );
+                }
+                return _fallback();
+              },
+            ),
+          ),
+          // Scrim + site name at the bottom
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              padding: EdgeInsets.symmetric(horizontal: 6.w, vertical: 4.h),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [
+                    Colors.black.withValues(alpha: 0.65),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+              child: Text(
+                preview?.siteName ?? _domain,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 8.sp,
+                  fontWeight: FontWeight.w700,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return _fallback();
+  }
+
+  Widget _fallback() {
     return Container(
       decoration: BoxDecoration(
         gradient: LinearGradient(
@@ -600,7 +675,7 @@ class _LinkCell extends StatelessWidget {
           end: Alignment.bottomRight,
           colors: [
             color.withValues(alpha: 0.80),
-            color.withValues(alpha: 0.60)
+            color.withValues(alpha: 0.60),
           ],
         ),
       ),
@@ -674,22 +749,80 @@ class _TypeCell extends StatelessWidget {
 }
 
 class _Thumb extends StatelessWidget {
-  final String path;
-  const _Thumb({required this.path});
+  final AnchorItemModel item;
+  const _Thumb({required this.item});
+
+  /// Returns the best square CDN thumbnail URL.
+  /// Derives it fresh from [cloudinaryPublicId] so existing synced items
+  /// automatically get the corrected square crop (fixes the "zoomed-out"
+  /// appearance that occurred when the old 400×300 landscape thumbnail was
+  /// displayed inside portrait or near-square card slots).
+  String? get _cdnThumbUrl {
+    if (item.cloudinaryPublicId != null) {
+      return CloudinaryService.instance
+          .thumbnailUrl(item.cloudinaryPublicId!, item.type);
+    }
+    return item.thumbnailUrl;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final isNet = path.startsWith('http');
-    return SizedBox.expand(
-      child: isNet
-          ? Image.network(path,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) =>
-                  Container(color: AppColors.cardHover))
-          : Image.file(File(path),
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) =>
-                  Container(color: AppColors.cardHover)),
+    final cdnUrl = _cdnThumbUrl;
+
+    // 1) CDN thumbnail — square crop, fills any aspect-ratio slot correctly
+    if (cdnUrl != null) {
+      return SizedBox.expand(
+        child: CachedNetworkImage(
+          imageUrl: cdnUrl,
+          fit: BoxFit.cover,
+          width: double.infinity,
+          height: double.infinity,
+          placeholder: (_, __) => Container(color: AppColors.cardHover),
+          errorWidget: (_, __, ___) => _localFallback(),
+        ),
+      );
+    }
+    // 2) Full CDN URL (no dedicated thumbnail yet)
+    if (item.cloudinaryUrl != null) {
+      return SizedBox.expand(
+        child: CachedNetworkImage(
+          imageUrl: item.cloudinaryUrl!,
+          fit: BoxFit.cover,
+          width: double.infinity,
+          height: double.infinity,
+          placeholder: (_, __) => Container(color: AppColors.cardHover),
+          errorWidget: (_, __, ___) => _localFallback(),
+        ),
+      );
+    }
+    return SizedBox.expand(child: _localFallback());
+  }
+
+  /// 3) Local thumbnail path → 4) content path (images only)
+  Widget _localFallback() {
+    if (item.thumbnailPath != null) {
+      return Image.file(
+        File(item.thumbnailPath!),
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => _contentImage(),
+      );
+    }
+    return _contentImage();
+  }
+
+  Widget _contentImage() {
+    final path = item.content;
+    if (path.startsWith('http')) {
+      return Image.network(
+        path,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => Container(color: AppColors.cardHover),
+      );
+    }
+    return Image.file(
+      File(path),
+      fit: BoxFit.cover,
+      errorBuilder: (_, __, ___) => Container(color: AppColors.cardHover),
     );
   }
 }

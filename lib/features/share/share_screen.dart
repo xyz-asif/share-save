@@ -19,7 +19,7 @@ class ShareScreen extends ConsumerStatefulWidget {
 class _ShareScreenState extends ConsumerState<ShareScreen>
     with SingleTickerProviderStateMixin {
   static const _channel =
-      MethodChannel('com.example.anchor/share');
+      MethodChannel('com.asif.anchors/share');
 
   SharedData? _sharedData;
   AnchorModel? _selectedAnchor;

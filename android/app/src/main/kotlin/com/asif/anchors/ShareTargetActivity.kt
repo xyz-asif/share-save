@@ -1,4 +1,4 @@
-package com.example.anchor
+package com.asif.anchors
 
 import android.content.Intent
 import android.graphics.PixelFormat
@@ -18,7 +18,7 @@ import java.util.concurrent.Executors
 class ShareTargetActivity : FlutterActivity() {
 
     companion object {
-        const val CHANNEL = "com.example.anchor/share"
+        const val CHANNEL = "com.asif.anchors/share"
     }
 
     private val ioExecutor = Executors.newSingleThreadExecutor()

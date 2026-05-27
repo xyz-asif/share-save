@@ -6,7 +6,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import 'package:photo_view/photo_view.dart';
+import 'package:open_filex/open_filex.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../core/cloudinary_service.dart';
+import '../../core/link_preview_service.dart';
+import '../../core/sync_service.dart';
 import '../../core/theme.dart';
 import '../../models/anchor_item_model.dart';
 import '../../models/anchor_model.dart';
@@ -41,6 +45,9 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
     Future.delayed(const Duration(milliseconds: 330), () {
       if (mounted) _animCtrl.forward();
     });
+    // Kick off any pending Cloudinary uploads for items in this anchor
+    Future.microtask(
+        () => ref.read(cloudinarySyncProvider.notifier).syncPending());
     _appBarFade = CurvedAnimation(
       parent: _animCtrl,
       curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
@@ -211,8 +218,6 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
 
   // ── Grid ────────────────────────────────────────────────────────────────────
 
-  static const _imgRatios = [0.65, 0.85, 0.72, 1.05, 0.60, 0.90, 0.78, 1.12];
-
   Widget _buildGrid(List<AnchorItemModel> items, AnchorModel anchor) {
     return SliverPadding(
       padding: EdgeInsets.fromLTRB(12.w, 8.h, 12.w, 100.h),
@@ -239,7 +244,6 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
                 key: ValueKey(items[i].id),
                 item: items[i],
                 anchorColor: anchor.color,
-                imageAspectRatio: _imgRatios[i % _imgRatios.length],
                 isJiggling: _jigglingItemId == items[i].id,
                 onTap: () => _openItem(ctx, items[i]),
                 onLongPress: () => _onItemLongPress(items[i], anchor),
@@ -253,7 +257,7 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
 
   // ── Actions ─────────────────────────────────────────────────────────────────
 
-  void _openItem(BuildContext context, AnchorItemModel item) {
+  Future<void> _openItem(BuildContext context, AnchorItemModel item) async {
     HapticFeedback.selectionClick();
     switch (item.type) {
       case ItemType.link:
@@ -280,9 +284,37 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
         );
       case ItemType.video:
       case ItemType.audio:
+        // Use OpenFilex for local/content-URI paths — it handles Android
+        // FileProvider so we never get a FileUriExposedException.
+        // If the local file is gone but we have a CDN URL, stream from there.
+        try {
+          final path = item.content;
+          if (!path.startsWith('http')) {
+            await OpenFilex.open(path);
+          } else if (item.cloudinaryUrl != null) {
+            await launchUrl(Uri.parse(item.cloudinaryUrl!),
+                mode: LaunchMode.externalApplication);
+          } else {
+            await launchUrl(Uri.parse(path),
+                mode: LaunchMode.externalApplication);
+          }
+        } catch (_) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Cannot open this file')),
+            );
+          }
+        }
       case ItemType.file:
-        launchUrl(Uri.file(item.content),
-            mode: LaunchMode.externalApplication);
+        if (!context.mounted) return;
+        showModalBottomSheet(
+          context: context,
+          backgroundColor: AppColors.surface,
+          shape: RoundedRectangleBorder(
+              borderRadius:
+                  BorderRadius.vertical(top: Radius.circular(24.r))),
+          builder: (_) => _FilePreviewSheet(item: item),
+        );
     }
   }
 
@@ -323,7 +355,6 @@ class _ItemCard extends StatefulWidget {
   final VoidCallback onTap;
   final VoidCallback onLongPress;
   final bool isJiggling;
-  final double imageAspectRatio;
 
   const _ItemCard({
     super.key,
@@ -332,7 +363,6 @@ class _ItemCard extends StatefulWidget {
     required this.onTap,
     required this.onLongPress,
     required this.isJiggling,
-    this.imageAspectRatio = 0.75,
   });
 
   @override
@@ -398,7 +428,7 @@ class _ItemCardState extends State<_ItemCard>
           ),
           clipBehavior: Clip.antiAlias,
           child: switch (widget.item.type) {
-            ItemType.image => _ImageContent(item: widget.item, aspectRatio: widget.imageAspectRatio),
+            ItemType.image => _ImageContent(item: widget.item),
             ItemType.link => _LinkContent(item: widget.item, accentColor: widget.anchorColor),
             ItemType.text => _TextContent(item: widget.item, accentColor: widget.anchorColor),
             ItemType.video => _MediaContent(
@@ -412,7 +442,8 @@ class _ItemCardState extends State<_ItemCard>
             ItemType.file => _MediaContent(
                 item: widget.item,
                 icon: Icons.insert_drive_file_rounded,
-                color: AppColors.textTertiary),
+                color: widget.anchorColor,
+                accentColor: widget.anchorColor),
           },
         ),
       ),
@@ -422,33 +453,151 @@ class _ItemCardState extends State<_ItemCard>
 
 // ─── Card content variants ────────────────────────────────────────────────────
 
-class _ImageContent extends StatelessWidget {
+/// Renders an image card whose height adapts to the image's actual aspect
+/// ratio so the full picture is always visible — no cropping.
+///
+/// Flutter's [ImageStream] is used to read the decoded pixel dimensions once
+/// (from the in-memory cache when available, or after the first network
+/// download).  Until the ratio is known a 1:1 placeholder is shown; once
+/// detected the [AspectRatio] snaps to the real value and [SliverMasonryGrid]
+/// re-lays out the column naturally.
+class _ImageContent extends StatefulWidget {
   final AnchorItemModel item;
-  final double aspectRatio;
-  const _ImageContent({required this.item, this.aspectRatio = 0.75});
+  const _ImageContent({required this.item});
+
+  @override
+  State<_ImageContent> createState() => _ImageContentState();
+}
+
+class _ImageContentState extends State<_ImageContent> {
+  double? _ratio;           // null → still detecting
+  ImageStream? _stream;
+  late ImageStreamListener _listener;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveRatio();
+  }
+
+  @override
+  void didUpdateWidget(_ImageContent old) {
+    super.didUpdateWidget(old);
+    if (old.item.id != widget.item.id) {
+      _stream?.removeListener(_listener);
+      _ratio = null;
+      _resolveRatio();
+    }
+  }
+
+  @override
+  void dispose() {
+    _stream?.removeListener(_listener);
+    super.dispose();
+  }
+
+  void _resolveRatio() {
+    final item = widget.item;
+
+    // Pick the same provider that the visible image widget will use, so the
+    // ImageStream is already warm whenever CachedNetworkImage has the image.
+    final ImageProvider provider;
+    if (item.cloudinaryPublicId != null) {
+      provider = CachedNetworkImageProvider(
+        CloudinaryService.instance.thumbnailUrl(item.cloudinaryPublicId!, item.type),
+      );
+    } else if (item.thumbnailUrl != null) {
+      provider = CachedNetworkImageProvider(item.thumbnailUrl!);
+    } else if (item.cloudinaryUrl != null) {
+      provider = CachedNetworkImageProvider(item.cloudinaryUrl!);
+    } else if (!item.content.startsWith('http')) {
+      provider = FileImage(File(item.content));
+    } else {
+      provider = CachedNetworkImageProvider(item.content);
+    }
+
+    _listener = ImageStreamListener(
+      (info, _) {
+        final w = info.image.width.toDouble();
+        final h = info.image.height.toDouble();
+        if (h > 0 && mounted) setState(() => _ratio = w / h);
+        _stream?.removeListener(_listener);
+      },
+      onError: (_, __) {
+        // Fall back to a square card on any decode error.
+        if (mounted) setState(() => _ratio = 1.0);
+        _stream?.removeListener(_listener);
+      },
+    );
+
+    _stream = provider.resolve(const ImageConfiguration());
+    _stream!.addListener(_listener);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final isNet = item.content.startsWith('http');
+    final item = widget.item;
+
+    // Use detected ratio; show 1:1 square as placeholder while detecting.
+    final ratio = _ratio ?? 1.0;
+
+    final thumbUrl = item.cloudinaryPublicId != null
+        ? CloudinaryService.instance.thumbnailUrl(item.cloudinaryPublicId!, item.type)
+        : item.thumbnailUrl;
+    final cdnUrl = item.cloudinaryUrl;
+    final isLocalFile = !item.content.startsWith('http');
+
+    Widget imageWidget;
+    if (thumbUrl != null) {
+      imageWidget = CachedNetworkImage(
+        imageUrl: thumbUrl,
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        placeholder: (_, __) => Container(color: AppColors.bg),
+        errorWidget: (_, __, ___) => _BrokenImage(height: 60.h),
+      );
+    } else if (cdnUrl != null) {
+      imageWidget = CachedNetworkImage(
+        imageUrl: cdnUrl,
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        placeholder: (_, __) => Container(color: AppColors.bg),
+        errorWidget: (_, __, ___) => _BrokenImage(height: 60.h),
+      );
+    } else if (isLocalFile) {
+      imageWidget = Image.file(
+        File(item.content),
+        fit: BoxFit.cover,
+        width: double.infinity,
+        errorBuilder: (_, __, ___) => _BrokenImage(height: 80.h),
+      );
+    } else {
+      imageWidget = CachedNetworkImage(
+        imageUrl: item.content,
+        fit: BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        placeholder: (_, __) => Container(color: AppColors.bg),
+        errorWidget: (_, __, ___) => _BrokenImage(height: 60.h),
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        AspectRatio(
-          aspectRatio: aspectRatio,
-          child: isNet
-              ? CachedNetworkImage(
-                  imageUrl: item.content,
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  placeholder: (_, __) => Container(color: AppColors.bg),
-                  errorWidget: (_, __, ___) => _BrokenImage(height: 60.h),
-                )
-              : Image.file(
-                  File(item.content),
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  errorBuilder: (_, __, ___) => _BrokenImage(height: 80.h),
-                ),
+        Stack(
+          children: [
+            AspectRatio(aspectRatio: ratio, child: imageWidget),
+            if (item.syncStatus != SyncStatus.synced &&
+                item.syncStatus != SyncStatus.na)
+              Positioned(
+                top: 6,
+                right: 6,
+                child: _SyncBadge(status: item.syncStatus),
+              ),
+          ],
         ),
         if (item.title != null)
           Padding(
@@ -469,7 +618,7 @@ class _ImageContent extends StatelessWidget {
   }
 }
 
-class _LinkContent extends StatelessWidget {
+class _LinkContent extends ConsumerWidget {
   final AnchorItemModel item;
   final Color accentColor;
   const _LinkContent({required this.item, required this.accentColor});
@@ -483,10 +632,43 @@ class _LinkContent extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final previewAsync = ref.watch(linkPreviewProvider(item.content));
+    final preview = previewAsync.valueOrNull;
+
+    final title = item.title ?? preview?.title;
+    final description = item.description ?? preview?.description;
+    // Prefer Cloudinary Fetch CDN; fall back to raw OG URL if CDN unavailable
+    final ogCdnImage = preview?.cdnImageUrl;
+    final ogRawImage = preview?.imageUrl;
+    final ogImageUrl = ogCdnImage ?? ogRawImage;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // OG image — CDN preferred, raw URL as fallback
+        if (ogImageUrl != null)
+          AspectRatio(
+            aspectRatio: 1.91,
+            child: CachedNetworkImage(
+              imageUrl: ogImageUrl,
+              fit: BoxFit.cover,
+              width: double.infinity,
+              placeholder: (_, __) => Container(color: AppColors.bg),
+              errorWidget: (_, __, ___) {
+                // CDN failed → retry with raw URL
+                if (ogImageUrl == ogCdnImage && ogRawImage != null) {
+                  return Image.network(
+                    ogRawImage,
+                    fit: BoxFit.cover,
+                    width: double.infinity,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  );
+                }
+                return const SizedBox.shrink();
+              },
+            ),
+          ),
         Container(height: 3.h, color: accentColor),
         Padding(
           padding: EdgeInsets.all(10.r),
@@ -507,7 +689,7 @@ class _LinkContent extends StatelessWidget {
                 SizedBox(width: 5.w),
                 Expanded(
                   child: Text(
-                    _domain,
+                    preview?.siteName ?? _domain,
                     style: TextStyle(
                         color: accentColor,
                         fontSize: 9.sp,
@@ -516,11 +698,21 @@ class _LinkContent extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
+                // Loading indicator while fetching OG data
+                if (previewAsync.isLoading)
+                  SizedBox(
+                    width: 8.r,
+                    height: 8.r,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.2,
+                      color: accentColor.withValues(alpha: 0.5),
+                    ),
+                  ),
               ]),
-              if (item.title != null) ...[
+              if (title != null) ...[
                 SizedBox(height: 6.h),
                 Text(
-                  item.title!,
+                  title,
                   style: TextStyle(
                       color: AppColors.textPrimary,
                       fontSize: 11.sp,
@@ -530,23 +722,23 @@ class _LinkContent extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ],
-              if (item.description != null) ...[
+              if (description != null) ...[
                 SizedBox(height: 4.h),
                 Text(
-                  item.description!,
+                  description,
                   style: TextStyle(
                       color: AppColors.textSecondary,
                       fontSize: 10.sp,
                       height: 1.4),
-                  maxLines: 1,
+                  maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
               ],
               SizedBox(height: 5.h),
               Text(
                 item.content,
-                style: TextStyle(
-                    color: AppColors.textTertiary, fontSize: 9.sp),
+                style:
+                    TextStyle(color: AppColors.textTertiary, fontSize: 9.sp),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -620,24 +812,43 @@ class _MediaContent extends StatelessWidget {
   final AnchorItemModel item;
   final IconData icon;
   final Color color;
+  final Color? accentColor;
   const _MediaContent(
-      {required this.item, required this.icon, required this.color});
+      {required this.item,
+      required this.icon,
+      required this.color,
+      this.accentColor});
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    // Video with a Cloudinary poster frame → show thumbnail card
+    final thumbUrl = item.thumbnailUrl;
+    if (item.type == ItemType.video && thumbUrl != null) {
+      return _VideoPosterCard(item: item, thumbUrl: thumbUrl, color: color);
+    }
+
+    // Default: icon + title card
+    final content = Padding(
       padding: EdgeInsets.all(12.r),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 32.r,
-            height: 32.r,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(8.r),
-            ),
-            child: Icon(icon, color: color, size: 17.sp),
+          Row(
+            children: [
+              Container(
+                width: 32.r,
+                height: 32.r,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8.r),
+                ),
+                child: Icon(icon, color: color, size: 17.sp),
+              ),
+              const Spacer(),
+              if (item.syncStatus != SyncStatus.synced &&
+                  item.syncStatus != SyncStatus.na)
+                _SyncBadge(status: item.syncStatus),
+            ],
           ),
           SizedBox(height: 8.h),
           Text(
@@ -654,12 +865,159 @@ class _MediaContent extends StatelessWidget {
             SizedBox(height: 3.h),
             Text(
               item.mimeType!,
-              style: TextStyle(
-                  color: AppColors.textTertiary, fontSize: 9.sp),
+              style:
+                  TextStyle(color: AppColors.textTertiary, fontSize: 9.sp),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ],
+        ],
+      ),
+    );
+
+    if (accentColor == null) return content;
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(width: 3.w, color: accentColor),
+          Expanded(child: content),
+        ],
+      ),
+    );
+  }
+}
+
+/// Video card with a Cloudinary-generated poster frame + play overlay.
+class _VideoPosterCard extends StatelessWidget {
+  final AnchorItemModel item;
+  final String thumbUrl;
+  final Color color;
+  const _VideoPosterCard(
+      {required this.item, required this.thumbUrl, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // Poster frame
+        AspectRatio(
+          aspectRatio: 16 / 9,
+          child: CachedNetworkImage(
+            imageUrl: thumbUrl,
+            fit: BoxFit.cover,
+            width: double.infinity,
+            placeholder: (_, __) => Container(color: Colors.black87),
+            errorWidget: (_, __, ___) => Container(
+              color: Colors.black87,
+              child: Icon(Icons.videocam_rounded,
+                  color: Colors.white54, size: 28.sp),
+            ),
+          ),
+        ),
+        // Gradient scrim
+        Positioned.fill(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Colors.transparent, Colors.black.withValues(alpha: 0.55)],
+                stops: const [0.45, 1.0],
+              ),
+            ),
+          ),
+        ),
+        // Play button
+        Positioned.fill(
+          child: Center(
+            child: Container(
+              width: 36.r,
+              height: 36.r,
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.5),
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.8), width: 1.5),
+              ),
+              child: Icon(Icons.play_arrow_rounded,
+                  color: Colors.white, size: 20.sp),
+            ),
+          ),
+        ),
+        // Title at the bottom
+        Positioned(
+          bottom: 0,
+          left: 0,
+          right: 0,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(8.w, 0, 8.w, 8.h),
+            child: Text(
+              item.title ?? item.originalFilename ?? 'Video',
+              style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 10.sp,
+                  fontWeight: FontWeight.w600,
+                  shadows: const [
+                    Shadow(color: Colors.black54, blurRadius: 4)
+                  ]),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ),
+        // Sync badge
+        if (item.syncStatus != SyncStatus.synced &&
+            item.syncStatus != SyncStatus.na)
+          Positioned(
+            top: 6,
+            right: 6,
+            child: _SyncBadge(status: item.syncStatus),
+          ),
+      ],
+    );
+  }
+}
+
+// ── Sync status badge ─────────────────────────────────────────────────────────
+
+class _SyncBadge extends StatelessWidget {
+  final SyncStatus status;
+  const _SyncBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, label, tint) = switch (status) {
+      SyncStatus.uploading => (null, 'Syncing', Colors.white70),
+      SyncStatus.failed => (Icons.warning_amber_rounded, 'Failed', Colors.orange),
+      _ => (Icons.cloud_upload_outlined, 'Local', Colors.white70),
+    };
+
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 6.w, vertical: 3.h),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(20.r),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (status == SyncStatus.uploading)
+            SizedBox(
+              width: 8.r,
+              height: 8.r,
+              child: const CircularProgressIndicator(
+                  color: Colors.white70, strokeWidth: 1.5),
+            )
+          else if (icon != null)
+            Icon(icon, color: tint, size: 9.sp),
+          SizedBox(width: 3.w),
+          Text(label,
+              style: TextStyle(
+                  color: tint,
+                  fontSize: 8.sp,
+                  fontWeight: FontWeight.w500)),
         ],
       ),
     );
@@ -856,7 +1214,9 @@ class _ImagePreviewScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isNet = item.content.startsWith('http');
+    // Prefer CDN full-resolution URL when the item has been synced.
+    final displayUrl = item.cloudinaryUrl ?? item.content;
+    final isNet = displayUrl.startsWith('http');
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -870,11 +1230,151 @@ class _ImagePreviewScreen extends StatelessWidget {
       ),
       body: PhotoView(
         imageProvider: isNet
-            ? CachedNetworkImageProvider(item.content)
-            : FileImage(File(item.content)) as ImageProvider,
+            ? CachedNetworkImageProvider(displayUrl)
+            : FileImage(File(displayUrl)) as ImageProvider,
         minScale: PhotoViewComputedScale.contained,
         maxScale: PhotoViewComputedScale.covered * 4,
         heroAttributes: PhotoViewHeroAttributes(tag: item.id),
+      ),
+    );
+  }
+}
+
+class _FilePreviewSheet extends StatefulWidget {
+  final AnchorItemModel item;
+  const _FilePreviewSheet({required this.item});
+
+  @override
+  State<_FilePreviewSheet> createState() => _FilePreviewSheetState();
+}
+
+class _FilePreviewSheetState extends State<_FilePreviewSheet> {
+  String? _fileSize;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSize();
+  }
+
+  Future<void> _loadSize() async {
+    final file = File(widget.item.content);
+    if (await file.exists()) {
+      final bytes = await file.length();
+      if (mounted) setState(() => _fileSize = _fmt(bytes));
+    }
+  }
+
+  String _fmt(int b) {
+    if (b < 1024) return '$b B';
+    if (b < 1024 * 1024) return '${(b / 1024).toStringAsFixed(1)} KB';
+    return '${(b / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  String get _ext {
+    final name = widget.item.originalFilename ?? widget.item.title ?? '';
+    final dot = name.lastIndexOf('.');
+    return dot >= 0 ? name.substring(dot + 1).toUpperCase() : 'FILE';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    final filename = item.originalFilename ?? item.title ?? 'Document';
+
+    return Padding(
+      padding: EdgeInsets.fromLTRB(20.w, 16.h, 20.w, 40.h),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Center(
+            child: Container(
+              width: 36.w,
+              height: 4.h,
+              decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2.r)),
+            ),
+          ),
+          SizedBox(height: 28.h),
+          Container(
+            width: 80.r,
+            height: 80.r,
+            decoration: BoxDecoration(
+              color: AppColors.accent.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(20.r),
+              border: Border.all(
+                  color: AppColors.accent.withValues(alpha: 0.20), width: 1.2),
+            ),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.insert_drive_file_rounded,
+                    color: AppColors.accent, size: 30.sp),
+                SizedBox(height: 2.h),
+                Text(
+                  _ext,
+                  style: TextStyle(
+                      color: AppColors.accent,
+                      fontSize: 9.sp,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.6),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(height: 16.h),
+          Text(
+            filename,
+            style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 16.sp,
+                fontWeight: FontWeight.w700,
+                height: 1.3),
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          SizedBox(height: 6.h),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (item.mimeType != null) ...[
+                Text(item.mimeType!,
+                    style: TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12.sp)),
+                if (_fileSize != null)
+                  Text('  ·  ',
+                      style: TextStyle(
+                          color: AppColors.textTertiary, fontSize: 12.sp)),
+              ],
+              if (_fileSize != null)
+                Text(_fileSize!,
+                    style: TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12.sp)),
+            ],
+          ),
+          SizedBox(height: 32.h),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: () async {
+                Navigator.pop(context);
+                await OpenFilex.open(item.content);
+              },
+              icon: Icon(Icons.open_in_new_rounded, size: 16.sp),
+              label: Text('Open',
+                  style: TextStyle(
+                      fontWeight: FontWeight.w600, fontSize: 14.sp)),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.black,
+                padding: EdgeInsets.symmetric(vertical: 14.h),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14.r)),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "505133989126",
+    "project_id": "anchors-save",
+    "storage_bucket": "anchors-save.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:505133989126:android:db5ab20c583de710d0f287",
+        "android_client_info": {
+          "package_name": "com.asif.anchors"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "505133989126-ivchfg894k5jtmo4qu8kf72b1q3iq0jd.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.asif.anchors",
+            "certificate_hash": "d2b5392ba0d5d9f26203bff3a37d49b85ffbb380"
+          }
+        },
+        {
+          "client_id": "505133989126-hmuku2pbgj8mbmuhurjhlnjmjpl5gt7e.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJXuvT0udUHI12V9TovCqUTD6PDqALnUs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "505133989126-hmuku2pbgj8mbmuhurjhlnjmjpl5gt7e.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
