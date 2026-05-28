@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/database.dart';
 import '../core/firestore_service.dart';
@@ -6,62 +8,57 @@ import '../models/anchor_item_model.dart';
 import '../models/anchor_model.dart';
 
 class AnchorsNotifier extends AsyncNotifier<List<AnchorModel>> {
+  bool _restoreInFlight = false;
+  bool _disposed = false;
+  bool _disposeHookInstalled = false;
+
   @override
   Future<List<AnchorModel>> build() async {
+    if (!_disposeHookInstalled) {
+      _disposeHookInstalled = true;
+      ref.onDispose(() => _disposed = true);
+    }
+
     final localAnchors = await AppDatabase.instance.getAnchors();
     final uid = FirebaseAuth.instance.currentUser?.uid;
 
-    if (uid != null && localAnchors.isEmpty) {
-      // Fresh install / reinstall — local DB is empty.
-      // Run Firestore restore in the background so build() returns immediately.
-      // Awaiting it here caused a 40-second UI freeze: Firestore reads are slow
-      // on devices where GMS has connectivity issues (confirmed in logcat), and
-      // the sequential loop made it N anchors × ~8s = 40s with the UI stuck.
-      _syncFromFirestoreAndRefresh(uid);
+    if (uid != null && localAnchors.isEmpty && !_restoreInFlight) {
+      _restoreInFlight = true;
+      _syncFromFirestoreAndRefresh(uid).whenComplete(() {
+        _restoreInFlight = false;
+      });
     }
 
-    // Return immediately — shows empty state briefly, then anchors appear
-    // once the background sync writes to the DB and updates state directly.
     return localAnchors;
   }
 
-  /// Background Firestore restore: syncs data, then pushes the result into
-  /// state directly (no ref.invalidateSelf — that caused an infinite loop).
   Future<void> _syncFromFirestoreAndRefresh(String uid) async {
     await _syncFromFirestore(uid);
+    if (_disposed) return;
     final restored = await AppDatabase.instance.getAnchors();
+    if (_disposed) return;
     if (restored.isNotEmpty) {
       state = AsyncData(restored);
     }
   }
 
-  /// Pull anchors and their items from Firestore into the local DB.
-  ///
-  /// Key fix: all per-anchor item fetches run in parallel via Future.wait.
-  /// Previously they ran sequentially (for + await), which multiplied the
-  /// network latency by the number of anchors.
+  /// Fetch all anchors + items from Firestore and batch-write in one transaction.
   Future<void> _syncFromFirestore(String uid) async {
     try {
       final remoteAnchors = await FirestoreService.instance.getAnchors(uid);
 
-      // Write anchors to local DB first (items reference them via FK).
-      for (final anchor in remoteAnchors) {
-        await AppDatabase.instance.upsertAnchor(anchor);
-      }
+      // Fetch items for all anchors in parallel (network — no DB contention here).
+      final itemsByAnchor = <String, List<AnchorItemModel>>{};
+      await Future.wait(remoteAnchors.map((anchor) async {
+        final items = await FirestoreService.instance.getItems(uid, anchor.id);
+        itemsByAnchor[anchor.id] = items;
+      }));
 
-      // Fetch items for ALL anchors simultaneously instead of one-by-one.
-      // Before: N anchors × ~8s/call = 40s.  After: max(8s) ≈ 8s regardless of N.
-      await Future.wait(
-        remoteAnchors.map((anchor) async {
-          final remoteItems =
-              await FirestoreService.instance.getItems(uid, anchor.id);
-          for (final item in remoteItems) {
-            await AppDatabase.instance.upsertItem(item);
-          }
-        }),
-      );
+      // Single transaction for all writes — 10–50× faster than per-item inserts.
+      await AppDatabase.instance
+          .upsertAnchorsAndItems(remoteAnchors, itemsByAnchor);
     } catch (_) {
-      // Network failures are non-fatal; local data (empty) is still shown.
+      // Non-fatal — local data (empty) is still shown.
     }
   }
 
@@ -78,7 +75,11 @@ class AnchorsNotifier extends AsyncNotifier<List<AnchorModel>> {
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
-      FirestoreService.instance.saveAnchor(uid, anchor);
+      unawaited(
+        FirestoreService.instance.saveAnchor(uid, anchor).catchError((e) {
+          debugPrint('Firestore saveAnchor failed: $e');
+        }),
+      );
     }
 
     state = AsyncData([anchor, ...(state.valueOrNull ?? [])]);
@@ -90,7 +91,11 @@ class AnchorsNotifier extends AsyncNotifier<List<AnchorModel>> {
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
-      FirestoreService.instance.deleteAnchor(uid, id);
+      unawaited(
+        FirestoreService.instance.deleteAnchor(uid, id).catchError((e) {
+          debugPrint('Firestore deleteAnchor failed: $e');
+        }),
+      );
     }
 
     state = AsyncData(
@@ -99,8 +104,8 @@ class AnchorsNotifier extends AsyncNotifier<List<AnchorModel>> {
   }
 
   Future<void> refresh() async {
-    ref.invalidateSelf();
-    await future;
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(() => build());
   }
 }
 

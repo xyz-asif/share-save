@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -30,6 +31,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   String _searchQuery = '';
   bool _sortReversed = false;
   int _selectedTab = 0;
+  bool _wasHidden = false;
+  Timer? _searchDebounce;
 
   @override
   void initState() {
@@ -39,27 +42,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
+  void _onSearchChanged(String q) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 150), () {
+      if (mounted) setState(() => _searchQuery = q);
+    });
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Only refresh when returning from the share-target activity so newly
-    // shared items appear. We detect this via the 'hidden → resumed' transition
-    // (the share overlay puts the app in 'hidden', not 'paused').
-    // We do NOT invalidate on every resume — that was causing 61-frame drops
-    // on sign-in return and contributing to the MIUI ANR scout triggering.
     if (state == AppLifecycleState.hidden) {
       _wasHidden = true;
     } else if (state == AppLifecycleState.resumed && _wasHidden) {
       _wasHidden = false;
+      // Only invalidate the list — per-anchor previews rebuild lazily via their own providers.
       ref.invalidate(anchorsProvider);
-      ref.invalidate(anchorPreviewProvider);
     }
   }
-
-  bool _wasHidden = false;
 
   @override
   Widget build(BuildContext context) {
@@ -86,7 +90,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   parent: AlwaysScrollableScrollPhysics()),
               slivers: [
                 _SliverHeader(
-                  onSearchChanged: (q) => setState(() => _searchQuery = q),
+                  onSearchChanged: _onSearchChanged,
                   sortReversed: _sortReversed,
                   onSortToggle: () =>
                       setState(() => _sortReversed = !_sortReversed),
@@ -114,7 +118,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     }
                     return SliverToBoxAdapter(
                       child: _AnchorListColumn(
-                        key: ValueKey('$_sortReversed|$_searchQuery'),
+                        key: ValueKey(_sortReversed),
                         anchors: list,
                       ),
                     );
@@ -183,10 +187,8 @@ class _SliverHeaderState extends State<_SliverHeader>
         vsync: this, duration: const Duration(milliseconds: 260));
     _sortAnim = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 350));
-    _searchFade =
-        CurvedAnimation(parent: _searchAnim, curve: Curves.easeOut);
-    _searchSlide = Tween<Offset>(
-            begin: const Offset(0.15, 0), end: Offset.zero)
+    _searchFade = CurvedAnimation(parent: _searchAnim, curve: Curves.easeOut);
+    _searchSlide = Tween<Offset>(begin: const Offset(0.15, 0), end: Offset.zero)
         .animate(CurvedAnimation(parent: _searchAnim, curve: Curves.easeOut));
     _sortRotation = Tween<double>(begin: 0, end: 0.5)
         .animate(CurvedAnimation(parent: _sortAnim, curve: Curves.easeInOut));
@@ -388,8 +390,7 @@ class _AnchorListColumnState extends State<_AnchorListColumn>
       padding: EdgeInsets.fromLTRB(16.w, 20.h, 16.w, 100.h),
       child: Column(
         children: [
-          for (int i = 0; i < widget.anchors.length; i++)
-            _buildCard(i),
+          for (int i = 0; i < widget.anchors.length; i++) _buildCard(i),
         ],
       ),
     );
@@ -489,19 +490,26 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
                         top: Radius.circular(20.r),
                       ),
                       border: Border(
-                        top: BorderSide(color: Colors.white.withValues(alpha: 0.55), width: 1.2),
-                        left: BorderSide(color: Colors.white.withValues(alpha: 0.55), width: 1.2),
-                        right: BorderSide(color: Colors.white.withValues(alpha: 0.55), width: 1.2),
+                        top: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.55),
+                            width: 1.2),
+                        left: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.55),
+                            width: 1.2),
+                        right: BorderSide(
+                            color: Colors.white.withValues(alpha: 0.55),
+                            width: 1.2),
                       ),
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.vertical(
                         top: Radius.circular(20.r),
                       ),
+                      // OPTION D — BackdropFilter blur restored, with dark tint
                       child: BackdropFilter(
-                        filter: ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+                        filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
                         child: Container(
-                          color: Colors.white.withValues(alpha: 0.04),
+                          color: Colors.black.withValues(alpha: 0),
                           padding: EdgeInsets.symmetric(
                               horizontal: 16.w, vertical: 18.h),
                           child: _CardInfo(anchor: widget.anchor, items: items),
@@ -518,7 +526,6 @@ class _AnchorCardState extends ConsumerState<_AnchorCard>
     );
   }
 }
-
 // ─── Card sub-widgets ─────────────────────────────────────────────────────────
 
 class _PreviewBackground extends StatelessWidget {
@@ -537,7 +544,8 @@ class _PreviewBackground extends StatelessWidget {
 
       if (count == 1) {
         return Padding(
-          padding: EdgeInsets.fromLTRB(totalW * 0.15, 10.h, totalW * 0.15, 31.h),
+          padding:
+              EdgeInsets.fromLTRB(totalW * 0.15, 10.h, totalW * 0.15, 31.h),
           child: _styledSlot(slots[0], 0),
         );
       }
@@ -769,8 +777,11 @@ class _Thumb extends StatelessWidget {
   /// displayed inside portrait or near-square card slots).
   String? get _cdnThumbUrl {
     if (item.cloudinaryPublicId != null) {
-      return CloudinaryService.instance
-          .thumbnailUrl(item.cloudinaryPublicId!, item.type);
+      return CloudinaryService.instance.thumbnailUrl(
+        item.cloudinaryPublicId!,
+        item.type,
+        mimeType: item.mimeType,
+      );
     }
     return item.thumbnailUrl;
   }

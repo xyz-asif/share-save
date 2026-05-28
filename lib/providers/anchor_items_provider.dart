@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/database.dart';
 import '../core/firestore_service.dart';
@@ -7,15 +9,29 @@ import 'anchors_provider.dart';
 
 class AnchorItemsNotifier
     extends FamilyAsyncNotifier<List<AnchorItemModel>, String> {
+  bool _restoreInFlight = false;
+  bool _disposed = false;
+  bool _disposeHookInstalled = false;
+
   @override
   Future<List<AnchorItemModel>> build(String anchorId) async {
-    final localItems = await AppDatabase.instance.getItems(anchorId);
+    if (!_disposeHookInstalled) {
+      _disposeHookInstalled = true;
+      ref.onDispose(() => _disposed = true);
+    }
 
+    final localItems = await AppDatabase.instance.getItems(anchorId);
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null && localItems.isEmpty) {
-      // Run Firestore restore in the background — same reason as AnchorsNotifier:
-      // awaiting it would freeze the detail screen while network calls resolve.
-      _syncItemsAndRefresh(uid, anchorId);
+
+    if (uid != null && localItems.isEmpty && !_restoreInFlight) {
+      final alreadySynced =
+          await AppDatabase.instance.isAnchorSynced(anchorId);
+      if (!alreadySynced) {
+        _restoreInFlight = true;
+        _syncItemsAndRefresh(uid, anchorId).whenComplete(() {
+          _restoreInFlight = false;
+        });
+      }
     }
 
     return localItems;
@@ -23,7 +39,9 @@ class AnchorItemsNotifier
 
   Future<void> _syncItemsAndRefresh(String uid, String anchorId) async {
     await _syncItemsFromFirestore(uid, anchorId);
+    if (_disposed) return;
     final items = await AppDatabase.instance.getItems(anchorId);
+    if (_disposed) return;
     if (items.isNotEmpty) {
       state = AsyncData(items);
     }
@@ -36,6 +54,7 @@ class AnchorItemsNotifier
       for (final item in remoteItems) {
         await AppDatabase.instance.upsertItem(item);
       }
+      await AppDatabase.instance.markAnchorSynced(anchorId);
     } catch (_) {
       // Non-fatal — local data (if any) is still shown.
     }
@@ -64,10 +83,13 @@ class AnchorItemsNotifier
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
-      FirestoreService.instance.saveItem(uid, item);
+      unawaited(
+        FirestoreService.instance.saveItem(uid, item).catchError((e) {
+          debugPrint('Firestore saveItem failed: $e');
+        }),
+      );
     }
 
-    // Update state in-place — no ref.invalidateSelf() to avoid sync loop.
     state = AsyncData([item, ...(state.valueOrNull ?? [])]);
     ref.invalidate(anchorPreviewProvider(arg));
     return item;
@@ -79,7 +101,13 @@ class AnchorItemsNotifier
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null && item != null) {
-      FirestoreService.instance.deleteItem(uid, item.anchorId, itemId);
+      unawaited(
+        FirestoreService.instance
+            .deleteItem(uid, item.anchorId, itemId)
+            .catchError((e) {
+          debugPrint('Firestore deleteItem failed: $e');
+        }),
+      );
     }
 
     state = AsyncData(
@@ -89,8 +117,8 @@ class AnchorItemsNotifier
   }
 
   Future<void> refresh() async {
-    ref.invalidateSelf();
-    await future;
+    state = const AsyncLoading();
+    state = await AsyncValue.guard(() => build(arg));
   }
 }
 

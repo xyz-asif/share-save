@@ -27,6 +27,7 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
   final _descCtrl = TextEditingController();
   bool _loading = true;
   bool _saving = false;
+  bool _closing = false;
   late AnimationController _slideCtrl;
   late Animation<Offset> _slideAnim;
 
@@ -44,8 +45,9 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
 
   Future<void> _loadSharedData() async {
     try {
-      final data =
-          await _channel.invokeMapMethod<dynamic, dynamic>('getSharedData');
+      final data = await _channel
+          .invokeMapMethod<dynamic, dynamic>('getSharedData')
+          .timeout(const Duration(seconds: 10));
       if (data != null && mounted) {
         final shared = SharedData.fromMap(data);
         final autoTitle = shared.subject ??
@@ -104,27 +106,32 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
           mimeType: data.mimeType,
         );
       } else {
-        for (final path in data.uris) {
-          if (path.isEmpty) continue;
-          await notifier.addItem(
-            type: data.type,
-            title: title,
-            description: desc,
-            content: path,
-            originalFilename: path.split('/').last,
-            mimeType: data.mimeType,
-          );
-        }
+        final paths = data.uris.where((p) => p.isNotEmpty);
+        await Future.wait(paths.map((path) => notifier.addItem(
+              type: data.type,
+              title: title,
+              description: desc,
+              content: path,
+              originalFilename: path.split('/').last,
+              mimeType: data.mimeType,
+            )));
       }
-      ref.invalidate(anchorsProvider);
+      // Only refresh this anchor's preview — the list itself didn't change.
+      ref.invalidate(anchorPreviewProvider(anchorId));
       _close();
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
-  void _close() {
-    _slideCtrl.reverse().then((_) => _channel.invokeMethod('close'));
+  Future<void> _close() async {
+    if (_closing) return;
+    _closing = true;
+    try {
+      await _slideCtrl.reverse();
+    } finally {
+      await _channel.invokeMethod('close');
+    }
   }
 
   Future<void> _createNewAnchor() async {
@@ -139,6 +146,10 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
 
   @override
   void dispose() {
+    // Belt-and-suspenders: if dispose runs before _close completes, close the native side.
+    if (!_closing) {
+      _channel.invokeMethod('close');
+    }
     _slideCtrl.dispose();
     _titleCtrl.dispose();
     _descCtrl.dispose();

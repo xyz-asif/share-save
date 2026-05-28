@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/anchor_item_model.dart';
 import '../providers/anchor_items_provider.dart';
@@ -41,14 +43,12 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
 
   @override
   Future<SyncSummary> build() async {
-    // When connectivity is restored, kick off a sync pass
     ref.listen<AsyncValue<bool>>(connectivityProvider, (prev, next) {
       final wasOnline = prev?.valueOrNull ?? false;
       final isOnline = next.valueOrNull ?? false;
       if (isOnline && !wasOnline) syncPending();
     });
 
-    // Also attempt sync immediately on initialisation
     Future.microtask(syncPending);
 
     return _computeSummary();
@@ -56,7 +56,6 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
 
   // ── Public API ───────────────────────────────────────────────────────────
 
-  /// Called externally after a new item is added so it gets uploaded ASAP.
   Future<void> syncPending() async {
     if (_running) return;
 
@@ -67,6 +66,7 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
     if (user == null) return;
 
     _running = true;
+    final touchedAnchors = <String>{};
     try {
       final items = await AppDatabase.instance.getPendingItems();
       if (items.isEmpty) {
@@ -78,34 +78,36 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
 
       for (final item in items) {
         await _uploadItem(item, user.uid);
+        touchedAnchors.add(item.anchorId);
       }
 
       state = AsyncData(await _computeSummary());
     } finally {
       _running = false;
+      // One invalidation per anchor at the end — avoids the N×2 storm.
+      for (final anchorId in touchedAnchors) {
+        ref.invalidate(anchorItemsProvider(anchorId));
+        ref.invalidate(anchorPreviewProvider(anchorId));
+      }
     }
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────
 
   Future<void> _uploadItem(AnchorItemModel item, String uid) async {
-    // Mark as uploading so the UI can show a spinner
     await AppDatabase.instance.updateItemSync(
       item.id,
       syncStatus: SyncStatus.uploading,
     );
-    _refreshItemsUi(item.anchorId);
 
     try {
       final file = File(item.content);
 
-      // If the local file is missing, nothing to upload
       if (!await file.exists()) {
         await AppDatabase.instance.updateItemSync(
           item.id,
           syncStatus: SyncStatus.synced,
         );
-        _refreshItemsUi(item.anchorId);
         return;
       }
 
@@ -116,8 +118,8 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
         item.id,
       );
 
-      final thumbUrl =
-          CloudinaryService.instance.thumbnailUrl(result.publicId, item.type);
+      final thumbUrl = CloudinaryService.instance
+          .thumbnailUrl(result.publicId, item.type, mimeType: item.mimeType);
 
       await AppDatabase.instance.updateItemSync(
         item.id,
@@ -125,17 +127,20 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
         cloudinaryUrl: result.secureUrl,
         cloudinaryPublicId: result.publicId,
         thumbnailUrl: thumbUrl,
+        width: result.width,
+        height: result.height,
       );
 
-      // Update Firestore with the CDN URLs so the image survives reinstalls.
       final synced = await AppDatabase.instance.getItemById(item.id);
       if (synced != null) {
-        FirestoreService.instance.saveItem(uid, synced);
+        unawaited(
+          FirestoreService.instance.saveItem(uid, synced).catchError((e) {
+            debugPrint('Firestore saveItem failed: $e');
+          }),
+        );
       }
     } catch (_) {
       await AppDatabase.instance.incrementRetryCount(item.id);
-      // If we've hit the retry cap, mark failed; else leave as pending for
-      // the next sync pass.
       final updated = await AppDatabase.instance.getItemById(item.id);
       if (updated != null && updated.retryCount >= 3) {
         await AppDatabase.instance.updateItemSync(
@@ -149,15 +154,6 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
         );
       }
     }
-
-    _refreshItemsUi(item.anchorId);
-  }
-
-  void _refreshItemsUi(String anchorId) {
-    // Invalidate the items provider so any open detail screen refreshes
-    ref.invalidate(anchorItemsProvider(anchorId));
-    // Also refresh the home screen preview strip (picks up new thumbnailUrl)
-    ref.invalidate(anchorPreviewProvider(anchorId));
   }
 
   Future<SyncSummary> _computeSummary() async {

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'cloudinary_service.dart';
@@ -6,11 +7,17 @@ import 'database.dart';
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 /// Auto-dispose so unused previews don't stay in memory.
-/// Returns null while loading or if scraping fails.
 final linkPreviewProvider =
     FutureProvider.autoDispose.family<LinkPreviewData?, String>((ref, url) {
   return LinkPreviewService.instance.getPreview(url);
 });
+
+// ── Top-level isolate entry point ─────────────────────────────────────────────
+
+// Must be top-level for compute().
+LinkPreviewData _parseInIsolate(({String html, String url}) input) {
+  return LinkPreviewService._parseStatic(input.html, input.url);
+}
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -18,18 +25,15 @@ class LinkPreviewService {
   LinkPreviewService._();
   static final LinkPreviewService instance = LinkPreviewService._();
 
-  // Re-fetch if cached data is older than this
   static const _cacheTtl = Duration(days: 7);
 
   Future<LinkPreviewData?> getPreview(String url) async {
-    // 1. Return from DB cache if still fresh
     final cached = await AppDatabase.instance.getLinkPreview(url);
     if (cached != null &&
         DateTime.now().difference(cached.fetchedAt) < _cacheTtl) {
       return cached;
     }
 
-    // 2. Fetch + parse
     try {
       final response = await http
           .get(
@@ -44,21 +48,24 @@ class LinkPreviewService {
 
       if (response.statusCode != 200) return cached;
 
-      final data = _parse(response.body, url);
+      // Cap at 500 KB to bound regex backtracking time.
+      final body = response.body.length > 500 * 1024
+          ? response.body.substring(0, 500 * 1024)
+          : response.body;
 
-      // 3. Persist to cache (replace stale entry)
+      // Parse on a background isolate — heavy regex on large pages blocks the UI.
+      final data = await compute(_parseInIsolate, (html: body, url: url));
+
       await AppDatabase.instance.saveLinkPreview(data);
       return data;
     } catch (_) {
-      // Network / parse error — return stale cache rather than nothing
       return cached;
     }
   }
 
   // ── OG / meta tag parser ────────────────────────────────────────────────
 
-  LinkPreviewData _parse(String html, String url) {
-    // Match <meta property="og:*" content="..."> in either attribute order
+  static LinkPreviewData _parseStatic(String html, String url) {
     String? ogProperty(String property) {
       final re = RegExp(
         r'''(?:property|name)=["\']''' +
@@ -74,7 +81,6 @@ class LinkPreviewService {
       return (m?.group(1) ?? m?.group(2))?.trim().nullIfEmpty;
     }
 
-    // Fallback: <title> tag
     String? htmlTitle() {
       final m = RegExp(r'<title[^>]*>(.*?)</title>',
               caseSensitive: false, dotAll: true)
@@ -97,8 +103,6 @@ class LinkPreviewService {
     );
   }
 
-  // ── HTML entity decoder (handles &amp; &quot; etc.) ─────────────────────
-
   static String? _decodeHtml(String? s) {
     if (s == null) return null;
     return s
@@ -111,17 +115,13 @@ class LinkPreviewService {
   }
 }
 
-// ── Extension helper ──────────────────────────────────────────────────────────
+// ── Extension helpers ─────────────────────────────────────────────────────────
 
 extension on String {
   String? get nullIfEmpty => isEmpty ? null : this;
 }
 
-// ── Convenience extension on LinkPreviewData ──────────────────────────────────
-
 extension LinkPreviewDataExt on LinkPreviewData {
-  /// OG image delivered through the Cloudinary Fetch CDN.
-  /// Returns null if there's no OG image.
   String? get cdnImageUrl {
     final raw = imageUrl;
     if (raw == null || raw.isEmpty) return null;

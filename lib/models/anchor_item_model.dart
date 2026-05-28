@@ -49,6 +49,10 @@ class AnchorItemModel {
   /// Number of upload attempts (capped at 3, then marked failed).
   final int retryCount;
 
+  /// Image pixel dimensions — stored at upload/save time to avoid stream resolving.
+  final int? width;
+  final int? height;
+
   AnchorItemModel({
     required this.id,
     required this.anchorId,
@@ -65,6 +69,8 @@ class AnchorItemModel {
     this.cloudinaryPublicId,
     this.thumbnailUrl,
     this.retryCount = 0,
+    this.width,
+    this.height,
   });
 
   // ── Convenience getters ───────────────────────────────────────
@@ -86,6 +92,12 @@ class AnchorItemModel {
   /// Best thumbnail: CDN thumb → local thumbnail path → null.
   String? get displayThumbnail => thumbnailUrl ?? thumbnailPath;
 
+  /// Stored aspect ratio (width / height). Null if dimensions unknown.
+  double? get aspectRatio =>
+      (width != null && height != null && height! > 0)
+          ? width! / height!
+          : null;
+
   // ── Serialisation ─────────────────────────────────────────────
 
   Map<String, dynamic> toMap() => {
@@ -104,6 +116,8 @@ class AnchorItemModel {
         'cloudinary_public_id': cloudinaryPublicId,
         'thumbnail_url': thumbnailUrl,
         'retry_count': retryCount,
+        'width': width,
+        'height': height,
       };
 
   factory AnchorItemModel.fromMap(Map<String, dynamic> map) => AnchorItemModel(
@@ -124,6 +138,8 @@ class AnchorItemModel {
         cloudinaryPublicId: map['cloudinary_public_id'] as String?,
         thumbnailUrl: map['thumbnail_url'] as String?,
         retryCount: map['retry_count'] as int? ?? 0,
+        width: map['width'] as int?,
+        height: map['height'] as int?,
       );
 
   AnchorItemModel copyWith({
@@ -132,6 +148,8 @@ class AnchorItemModel {
     String? cloudinaryPublicId,
     String? thumbnailUrl,
     int? retryCount,
+    int? width,
+    int? height,
   }) =>
       AnchorItemModel(
         id: id,
@@ -149,5 +167,7 @@ class AnchorItemModel {
         cloudinaryPublicId: cloudinaryPublicId ?? this.cloudinaryPublicId,
         thumbnailUrl: thumbnailUrl ?? this.thumbnailUrl,
         retryCount: retryCount ?? this.retryCount,
+        width: width ?? this.width,
+        height: height ?? this.height,
       );
 }

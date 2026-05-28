@@ -10,7 +10,6 @@ import 'package:open_filex/open_filex.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../core/cloudinary_service.dart';
 import '../../core/link_preview_service.dart';
-import '../../core/sync_service.dart';
 import '../../core/theme.dart';
 import '../../models/anchor_item_model.dart';
 import '../../models/anchor_model.dart';
@@ -45,9 +44,6 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
     Future.delayed(const Duration(milliseconds: 330), () {
       if (mounted) _animCtrl.forward();
     });
-    // Kick off any pending Cloudinary uploads for items in this anchor
-    Future.microtask(
-        () => ref.read(cloudinarySyncProvider.notifier).syncPending());
     _appBarFade = CurvedAnimation(
       parent: _animCtrl,
       curve: const Interval(0.0, 0.6, curve: Curves.easeOut),
@@ -262,7 +258,22 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
     switch (item.type) {
       case ItemType.link:
         final uri = Uri.tryParse(item.content);
-        if (uri != null) launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (uri != null) {
+          try {
+            final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+            if (!ok && context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Could not open link')),
+              );
+            }
+          } catch (_) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Could not open link')),
+              );
+            }
+          }
+        }
       case ItemType.image:
         Navigator.push(
           context,
@@ -465,96 +476,24 @@ class _ItemCardState extends State<_ItemCard>
 
 // ─── Card content variants ────────────────────────────────────────────────────
 
-/// Renders an image card whose height adapts to the image's actual aspect
-/// ratio so the full picture is always visible — no cropping.
-///
-/// Flutter's [ImageStream] is used to read the decoded pixel dimensions once
-/// (from the in-memory cache when available, or after the first network
-/// download).  Until the ratio is known a 1:1 placeholder is shown; once
-/// detected the [AspectRatio] snaps to the real value and [SliverMasonryGrid]
-/// re-lays out the column naturally.
-class _ImageContent extends StatefulWidget {
+/// Renders an image card using the stored aspect ratio (width/height from DB).
+/// Never resolves an ImageStream — avoids 20× concurrent decodes on the UI isolate.
+/// Falls back to a 1:1 square when dimensions are not yet stored (old items or
+/// local files before first Cloudinary upload).
+class _ImageContent extends StatelessWidget {
   final AnchorItemModel item;
   const _ImageContent({required this.item});
 
   @override
-  State<_ImageContent> createState() => _ImageContentState();
-}
-
-class _ImageContentState extends State<_ImageContent> {
-  double? _ratio;           // null → still detecting
-  ImageStream? _stream;
-  late ImageStreamListener _listener;
-
-  @override
-  void initState() {
-    super.initState();
-    _resolveRatio();
-  }
-
-  @override
-  void didUpdateWidget(_ImageContent old) {
-    super.didUpdateWidget(old);
-    if (old.item.id != widget.item.id) {
-      _stream?.removeListener(_listener);
-      _ratio = null;
-      _resolveRatio();
-    }
-  }
-
-  @override
-  void dispose() {
-    _stream?.removeListener(_listener);
-    super.dispose();
-  }
-
-  void _resolveRatio() {
-    final item = widget.item;
-
-    // Pick the same provider that the visible image widget will use, so the
-    // ImageStream is already warm whenever CachedNetworkImage has the image.
-    final ImageProvider provider;
-    if (item.cloudinaryPublicId != null) {
-      provider = CachedNetworkImageProvider(
-        CloudinaryService.instance.thumbnailUrl(item.cloudinaryPublicId!, item.type),
-      );
-    } else if (item.thumbnailUrl != null) {
-      provider = CachedNetworkImageProvider(item.thumbnailUrl!);
-    } else if (item.cloudinaryUrl != null) {
-      provider = CachedNetworkImageProvider(item.cloudinaryUrl!);
-    } else if (!item.content.startsWith('http')) {
-      provider = FileImage(File(item.content));
-    } else {
-      provider = CachedNetworkImageProvider(item.content);
-    }
-
-    _listener = ImageStreamListener(
-      (info, _) {
-        final w = info.image.width.toDouble();
-        final h = info.image.height.toDouble();
-        if (h > 0 && mounted) setState(() => _ratio = w / h);
-        _stream?.removeListener(_listener);
-      },
-      onError: (_, __) {
-        // Fall back to a square card on any decode error.
-        if (mounted) setState(() => _ratio = 1.0);
-        _stream?.removeListener(_listener);
-      },
-    );
-
-    _stream = provider.resolve(const ImageConfiguration());
-    _stream!.addListener(_listener);
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final item = widget.item;
-
-    // Use detected ratio; show 1:1 square as placeholder while detecting.
-    final ratio = _ratio ?? 1.0;
+    final ratio = item.aspectRatio ?? 1.0;
 
     final thumbUrl = item.cloudinaryPublicId != null
-        ? CloudinaryService.instance.thumbnailUrl(item.cloudinaryPublicId!, item.type)
+        ? CloudinaryService.instance.thumbnailUrl(
+            item.cloudinaryPublicId!,
+            item.type,
+            mimeType: item.mimeType,
+          )
         : item.thumbnailUrl;
     final cdnUrl = item.cloudinaryUrl;
     final isLocalFile = !item.content.startsWith('http');
@@ -583,6 +522,7 @@ class _ImageContentState extends State<_ImageContent> {
         File(item.content),
         fit: BoxFit.cover,
         width: double.infinity,
+        cacheWidth: 600,
         errorBuilder: (_, __, ___) => _BrokenImage(height: 80.h),
       );
     } else {
@@ -1226,9 +1166,30 @@ class _ImagePreviewScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Prefer CDN full-resolution URL when the item has been synced.
     final displayUrl = item.cloudinaryUrl ?? item.content;
     final isNet = displayUrl.startsWith('http');
+
+    if (!isNet && !File(displayUrl).existsSync()) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          leading: IconButton(
+            icon: const Icon(Icons.close_rounded, color: Colors.white),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        body: const Center(
+          child: Text('Image not found',
+              style: TextStyle(color: Colors.white70)),
+        ),
+      );
+    }
+
+    final ImageProvider imageProvider = isNet
+        ? CachedNetworkImageProvider(displayUrl)
+        : FileImage(File(displayUrl));
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -1241,9 +1202,7 @@ class _ImagePreviewScreen extends StatelessWidget {
             style: TextStyle(color: Colors.white, fontSize: 16.sp)),
       ),
       body: PhotoView(
-        imageProvider: isNet
-            ? CachedNetworkImageProvider(displayUrl)
-            : FileImage(File(displayUrl)) as ImageProvider,
+        imageProvider: imageProvider,
         minScale: PhotoViewComputedScale.contained,
         maxScale: PhotoViewComputedScale.covered * 4,
         heroAttributes: PhotoViewHeroAttributes(tag: item.id),

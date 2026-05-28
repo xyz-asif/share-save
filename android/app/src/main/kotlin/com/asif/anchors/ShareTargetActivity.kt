@@ -3,6 +3,7 @@ package com.asif.anchors
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -110,7 +111,12 @@ class ShareTargetActivity : FlutterActivity() {
                 "subject" to subject, "mimeType" to type)
         }
 
-        val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        }
         // Copy content:// URI to a real file path Flutter can read
         val localPath = uri?.let { copyUriToAppStorage(it, type) } ?: uri?.toString()
         val itemType = uriTypeFromMime(type)
@@ -118,7 +124,14 @@ class ShareTargetActivity : FlutterActivity() {
     }
 
     private fun handleMultipleShare(intent: Intent, type: String): Map<String, Any?> {
-        val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM) ?: emptyList()
+        val uris: ArrayList<Uri> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                ?: arrayListOf()
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                ?: arrayListOf()
+        }
         val paths = uris.map { uri ->
             copyUriToAppStorage(uri, type) ?: uri.toString()
         }

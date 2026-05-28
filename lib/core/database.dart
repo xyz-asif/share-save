@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
@@ -49,13 +50,24 @@ class LinkPreviewData {
 class AppDatabase {
   static AppDatabase? _instance;
   static Database? _db;
+  static Completer<Database>? _opening;
 
   AppDatabase._();
   static AppDatabase get instance => _instance ??= AppDatabase._();
 
-  Future<Database> get db async {
-    _db ??= await _init();
-    return _db!;
+  Future<Database> get db {
+    if (_db != null) return Future.value(_db!);
+    if (_opening != null) return _opening!.future;
+    final c = Completer<Database>();
+    _opening = c;
+    _init().then((d) {
+      _db = d;
+      c.complete(d);
+    }).catchError((e, st) {
+      _opening = null;
+      c.completeError(e, st);
+    });
+    return c.future;
   }
 
   Future<Database> _init() async {
@@ -63,10 +75,11 @@ class AppDatabase {
     final path = join(dir, 'anchor.db');
     return openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, _) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) await _migrateV1toV2(db);
+        if (oldVersion < 3) await _migrateV2toV3(db);
       },
     );
   }
@@ -98,6 +111,8 @@ class AppDatabase {
         cloudinary_public_id TEXT,
         thumbnail_url TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
+        width INTEGER,
+        height INTEGER,
         FOREIGN KEY (anchor_id) REFERENCES anchors(id) ON DELETE CASCADE
       )
     ''');
@@ -115,19 +130,19 @@ class AppDatabase {
         fetched_at INTEGER NOT NULL
       )
     ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_metadata (
+        anchor_id TEXT PRIMARY KEY,
+        synced_at INTEGER NOT NULL
+      )
+    ''');
   }
 
   Future<void> _migrateV1toV2(Database db) async {
-    // SQLite has no ADD COLUMN IF NOT EXISTS, so we swallow duplicate-column
-    // errors. This makes the migration safe to re-run if a previous attempt was
-    // interrupted (sqflite rolls back the version bump on failure, so the
-    // migration can fire again on the next cold start).
     Future<void> safeAlter(String sql) async {
       try {
         await db.execute(sql);
-      } catch (_) {
-        // Column already exists — skip.
-      }
+      } catch (_) {}
     }
 
     await safeAlter(
@@ -141,7 +156,6 @@ class AppDatabase {
     await safeAlter(
         'ALTER TABLE anchor_items ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0');
 
-    // Only mark items that haven't been touched yet (sync_status still 'na').
     await db.execute('''
       UPDATE anchor_items
       SET sync_status = 'pending'
@@ -149,7 +163,6 @@ class AppDatabase {
         AND sync_status = 'na'
     ''');
 
-    // Create link preview cache — safe even if the table already exists.
     await db.execute('''
       CREATE TABLE IF NOT EXISTS link_previews (
         url TEXT PRIMARY KEY,
@@ -161,9 +174,26 @@ class AppDatabase {
       )
     ''');
 
-    // Secondary index for quick pending lookup.
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_items_sync ON anchor_items(sync_status)');
+  }
+
+  Future<void> _migrateV2toV3(Database db) async {
+    Future<void> safeAlter(String sql) async {
+      try {
+        await db.execute(sql);
+      } catch (_) {}
+    }
+
+    await safeAlter('ALTER TABLE anchor_items ADD COLUMN width INTEGER');
+    await safeAlter('ALTER TABLE anchor_items ADD COLUMN height INTEGER');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_metadata (
+        anchor_id TEXT PRIMARY KEY,
+        synced_at INTEGER NOT NULL
+      )
+    ''');
   }
 
   // ── Anchors ───────────────────────────────────────────────────────────────
@@ -198,12 +228,13 @@ class AppDatabase {
 
   Future<void> deleteAnchor(String id) async {
     final d = await db;
-    await d.delete('anchor_items', where: 'anchor_id = ?', whereArgs: [id]);
-    await d.delete('anchors', where: 'id = ?', whereArgs: [id]);
+    await d.transaction((txn) async {
+      await txn.delete('anchor_items', where: 'anchor_id = ?', whereArgs: [id]);
+      await txn.delete('anchors', where: 'id = ?', whereArgs: [id]);
+    });
   }
 
   /// Insert an anchor that already has an ID (e.g. restored from Firestore).
-  /// Silently ignores the row if it already exists locally.
   Future<void> upsertAnchor(AnchorModel anchor) async {
     await (await db).insert(
       'anchors',
@@ -213,13 +244,39 @@ class AppDatabase {
   }
 
   /// Insert an item that already has an ID (e.g. restored from Firestore).
-  /// Silently ignores the row if it already exists locally.
   Future<void> upsertItem(AnchorItemModel item) async {
     await (await db).insert(
       'anchor_items',
       item.toMap(),
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
+  }
+
+  /// Batch-upsert all anchors and their items in a single transaction.
+  /// Network fetches should be done before calling this; all DB writes are atomic.
+  Future<void> upsertAnchorsAndItems(
+    List<AnchorModel> anchors,
+    Map<String, List<AnchorItemModel>> itemsByAnchor,
+  ) async {
+    final database = await db;
+    await database.transaction((txn) async {
+      for (final a in anchors) {
+        await txn.insert(
+          'anchors',
+          a.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+      for (final entry in itemsByAnchor.entries) {
+        for (final item in entry.value) {
+          await txn.insert(
+            'anchor_items',
+            item.toMap(),
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      }
+    });
   }
 
   // ── Items ─────────────────────────────────────────────────────────────────
@@ -256,7 +313,6 @@ class AppDatabase {
     String? originalFilename,
     String? mimeType,
   }) async {
-    // Media items go into the upload queue; links/text don't need Cloudinary.
     final syncStatus = (type == ItemType.image ||
             type == ItemType.video ||
             type == ItemType.audio ||
@@ -284,15 +340,12 @@ class AppDatabase {
   Future<void> deleteItem(String id) async {
     final item = await getItemById(id);
     if (item != null && item.isLocal) {
-      // Delete local file
       final file = File(item.content);
       if (await file.exists()) await file.delete();
-      // Delete local thumbnail if present
       if (item.thumbnailPath != null) {
         final thumb = File(item.thumbnailPath!);
         if (await thumb.exists()) await thumb.delete();
       }
-      // Note: Cloudinary asset is NOT deleted here (requires API secret / backend).
     }
     await (await db).delete('anchor_items', where: 'id = ?', whereArgs: [id]);
   }
@@ -316,7 +369,6 @@ class AppDatabase {
 
   // ── Cloudinary sync helpers ───────────────────────────────────────────────
 
-  /// All items that still need to be uploaded (pending or failed with retries left).
   Future<List<AnchorItemModel>> getPendingItems() async {
     final rows = await (await db).rawQuery('''
       SELECT * FROM anchor_items
@@ -334,6 +386,8 @@ class AppDatabase {
     String? cloudinaryUrl,
     String? cloudinaryPublicId,
     String? thumbnailUrl,
+    int? width,
+    int? height,
   }) async {
     final values = <String, dynamic>{'sync_status': syncStatus.value};
     if (cloudinaryUrl != null) values['cloudinary_url'] = cloudinaryUrl;
@@ -341,6 +395,8 @@ class AppDatabase {
       values['cloudinary_public_id'] = cloudinaryPublicId;
     }
     if (thumbnailUrl != null) values['thumbnail_url'] = thumbnailUrl;
+    if (width != null) values['width'] = width;
+    if (height != null) values['height'] = height;
 
     await (await db)
         .update('anchor_items', values, where: 'id = ?', whereArgs: [id]);
@@ -351,6 +407,30 @@ class AppDatabase {
     await (await db).rawUpdate(
         'UPDATE anchor_items SET retry_count = retry_count + 1 WHERE id = ?',
         [id]);
+  }
+
+  // ── Sync metadata ─────────────────────────────────────────────────────────
+
+  /// Mark that a Firestore restore has been performed for [anchorId].
+  Future<void> markAnchorSynced(String anchorId) async {
+    await (await db).insert(
+      'sync_metadata',
+      {
+        'anchor_id': anchorId,
+        'synced_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Returns true if a Firestore restore has already been done for [anchorId].
+  Future<bool> isAnchorSynced(String anchorId) async {
+    final rows = await (await db).query(
+      'sync_metadata',
+      where: 'anchor_id = ?',
+      whereArgs: [anchorId],
+    );
+    return rows.isNotEmpty;
   }
 
   // ── Link preview cache ────────────────────────────────────────────────────

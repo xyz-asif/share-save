@@ -9,11 +9,15 @@ class CloudinaryResult {
   final String publicId;
   final String secureUrl;
   final String resourceType;
+  final int? width;
+  final int? height;
 
   const CloudinaryResult({
     required this.publicId,
     required this.secureUrl,
     required this.resourceType,
+    this.width,
+    this.height,
   });
 }
 
@@ -50,8 +54,11 @@ class CloudinaryService {
       ..files.add(await http.MultipartFile.fromPath('file', file.path));
 
     final streamed = await request.send().timeout(const Duration(minutes: 5));
-    final body = json.decode(await streamed.stream.bytesToString())
-        as Map<String, dynamic>;
+    // Separate timeout on the response body — a stalled server would hang forever otherwise.
+    final responseString = await streamed.stream
+        .bytesToString()
+        .timeout(const Duration(seconds: 30));
+    final body = json.decode(responseString) as Map<String, dynamic>;
 
     if (streamed.statusCode != 200) {
       final msg = (body['error'] as Map?)?['message'] ?? 'Upload failed';
@@ -62,15 +69,16 @@ class CloudinaryService {
       publicId: body['public_id'] as String,
       secureUrl: body['secure_url'] as String,
       resourceType: resourceType,
+      width: body['width'] as int?,
+      height: body['height'] as int?,
     );
   }
 
   // ── URL builders ────────────────────────────────────────────────────────
 
-  /// Card thumbnail URL — square crop so it works with any card aspect ratio
-  /// (portrait detail cards OR landscape home-screen preview slots).
-  /// Uses c_fill + g_auto so Cloudinary keeps the region of interest centred.
-  String thumbnailUrl(String publicId, ItemType type) {
+  /// Card thumbnail URL — square crop so it works with any card aspect ratio.
+  /// Pass [mimeType] for file-type items to get correct PDF vs non-PDF behaviour.
+  String? thumbnailUrl(String publicId, ItemType type, {String? mimeType}) {
     switch (type) {
       case ItemType.image:
         return '$_baseCdn/image/upload'
@@ -78,16 +86,21 @@ class CloudinaryService {
             '/$publicId';
 
       case ItemType.video:
-        // Poster frame at 1 second in, square crop
         return '$_baseCdn/video/upload'
             '/so_1.0,c_fill,w_400,h_400,f_jpg,q_auto'
             '/$publicId.jpg';
 
+      case ItemType.file:
+        // Only PDFs yield a valid page-1 preview; other raw types return null.
+        if (mimeType == 'application/pdf') {
+          return '$_baseCdn/image/upload'
+              '/pg_1,c_fill,w_400,h_400,f_jpg,q_auto'
+              '/$publicId.jpg';
+        }
+        return null;
+
       default:
-        // PDF / raw: try page-1 image preview, square
-        return '$_baseCdn/image/upload'
-            '/pg_1,c_fill,w_400,h_400,f_jpg,q_auto'
-            '/$publicId.jpg';
+        return null;
     }
   }
 
@@ -104,7 +117,6 @@ class CloudinaryService {
   }
 
   /// Deliver a remote OG image through the Cloudinary Fetch CDN.
-  /// This gives us CDN caching, auto-format, and resizing on any external URL.
   String fetchImageUrl(String remoteUrl) {
     final encoded = Uri.encodeComponent(remoteUrl);
     return '$_baseCdn/image/fetch'
