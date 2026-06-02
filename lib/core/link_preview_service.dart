@@ -6,9 +6,8 @@ import 'database.dart';
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
-/// Auto-dispose so unused previews don't stay in memory.
 final linkPreviewProvider =
-    FutureProvider.autoDispose.family<LinkPreviewData?, String>((ref, url) {
+    FutureProvider.family<LinkPreviewData?, String>((ref, url) {
   return LinkPreviewService.instance.getPreview(url);
 });
 

@@ -675,6 +675,7 @@ class _StackedCardsPreview extends StatelessWidget {
                 ItemType.image => _Thumb(item: item),
                 ItemType.video when item.displayThumbnail != null =>
                   _Thumb(item: item),
+                ItemType.link => _LinkCell(item: item, color: color),
                 _ => _TypeCell(type: item.type, color: color),
               },
       ),
@@ -884,23 +885,22 @@ class _LinkCell extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final preview = ref.watch(linkPreviewProvider(item.content)).valueOrNull;
-    // Prefer Cloudinary Fetch CDN (caching + transforms); fall back to raw OG URL
     final ogCdnImage = preview?.cdnImageUrl;
     final ogRawImage = preview?.imageUrl;
     final ogImage = ogCdnImage ?? ogRawImage;
 
-    if (ogImage != null) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          // Positioned.fill gives CachedNetworkImage explicit bounded constraints
-          // so BoxFit.cover always fills and crops correctly
+    // _fallback() is always the base layer — the image appears on top once
+    // loaded. This eliminates the placeholder flash: instead of switching
+    // between two widget trees, the solid color never disappears.
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _fallback(),
+        if (ogImage != null) ...[
           Positioned.fill(
             child: CachedNetworkImage(
               imageUrl: ogImage,
               fit: BoxFit.cover,
-              placeholder: (_, __) => _fallback(),
-              // CDN failed → retry with raw OG URL before giving up
               errorWidget: (_, __, ___) {
                 if (ogImage == ogCdnImage && ogRawImage != null) {
                   return Image.network(
@@ -908,14 +908,13 @@ class _LinkCell extends ConsumerWidget {
                     fit: BoxFit.cover,
                     width: double.infinity,
                     height: double.infinity,
-                    errorBuilder: (_, __, ___) => _fallback(),
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                   );
                 }
-                return _fallback();
+                return const SizedBox.shrink();
               },
             ),
           ),
-          // Scrim + site name at the bottom
           Positioned(
             bottom: 0,
             left: 0,
@@ -945,35 +944,23 @@ class _LinkCell extends ConsumerWidget {
             ),
           ),
         ],
-      );
-    }
-
-    return _fallback();
+      ],
+    );
   }
 
   Widget _fallback() {
     return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            color.withValues(alpha: 0.80),
-            color.withValues(alpha: 0.60),
-          ],
-        ),
-      ),
+      color: color,
       padding: EdgeInsets.symmetric(horizontal: 10.w),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(CupertinoIcons.link,
-              color: Colors.white.withValues(alpha: 0.9), size: 22.sp),
+          Icon(CupertinoIcons.link, color: Colors.white, size: 22.sp),
           SizedBox(height: 6.h),
           Text(
             _domain,
             style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.95),
+              color: Colors.white,
               fontSize: 10.sp,
               fontWeight: FontWeight.w600,
             ),
