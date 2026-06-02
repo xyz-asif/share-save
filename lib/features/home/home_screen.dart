@@ -11,6 +11,7 @@ import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/cloudinary_service.dart';
 import '../../core/link_preview_service.dart';
+import '../../core/sync_service.dart';
 import '../../core/theme.dart';
 import '../../models/anchor_item_model.dart';
 import '../../models/anchor_model.dart';
@@ -126,6 +127,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     child: _ErrorState(message: '$e'),
                   ),
                   data: (anchors) {
+                    if (_selectedTab == 2) {
+                      return const SliverToBoxAdapter(
+                          child: _SyncActivityView());
+                    }
                     var list = _searchQuery.isEmpty
                         ? anchors
                         : anchors
@@ -1426,6 +1431,583 @@ class _ErrorState extends StatelessWidget {
     return Center(
       child:
           Text(message, style: const TextStyle(color: AppColors.textSecondary)),
+    );
+  }
+}
+
+// ─── Sync Activity Tab (Tab 2) ────────────────────────────────────────────────
+
+enum _SyncFilter { all, synced, uploading, pending, failed }
+
+extension _SyncFilterExt on _SyncFilter {
+  String get label => switch (this) {
+        _SyncFilter.all => 'All',
+        _SyncFilter.synced => 'Synced',
+        _SyncFilter.uploading => 'Uploading',
+        _SyncFilter.pending => 'Pending',
+        _SyncFilter.failed => 'Failed',
+      };
+
+  IconData get icon => switch (this) {
+        _SyncFilter.all => CupertinoIcons.square_grid_2x2,
+        _SyncFilter.synced => CupertinoIcons.checkmark_circle_fill,
+        _SyncFilter.uploading => CupertinoIcons.arrow_up_circle_fill,
+        _SyncFilter.pending => CupertinoIcons.clock_fill,
+        _SyncFilter.failed => CupertinoIcons.xmark_circle_fill,
+      };
+
+  Color get color => switch (this) {
+        _SyncFilter.all => AppColors.accent,
+        _SyncFilter.synced => AppColors.success,
+        _SyncFilter.uploading => const Color(0xFFFF9500),
+        _SyncFilter.pending => AppColors.accentSoft,
+        _SyncFilter.failed => AppColors.danger,
+      };
+}
+
+class _SyncActivityView extends ConsumerStatefulWidget {
+  const _SyncActivityView();
+
+  @override
+  ConsumerState<_SyncActivityView> createState() => _SyncActivityViewState();
+}
+
+class _SyncActivityViewState extends ConsumerState<_SyncActivityView> {
+  _SyncFilter _filter = _SyncFilter.all;
+
+  List<ItemWithAnchor> _applyFilter(
+      List<ItemWithAnchor> all, _SyncFilter filter) {
+    return switch (filter) {
+      _SyncFilter.all => all,
+      _SyncFilter.synced => all
+          .where((e) =>
+              e.item.syncStatus == SyncStatus.synced ||
+              e.item.syncStatus == SyncStatus.na)
+          .toList(),
+      _SyncFilter.uploading =>
+        all.where((e) => e.item.syncStatus == SyncStatus.uploading).toList(),
+      _SyncFilter.pending =>
+        all.where((e) => e.item.syncStatus == SyncStatus.pending).toList(),
+      _SyncFilter.failed =>
+        all.where((e) => e.item.syncStatus == SyncStatus.failed).toList(),
+    };
+  }
+
+  Map<_SyncFilter, int> _buildCounts(List<ItemWithAnchor> all) => {
+        _SyncFilter.all: all.length,
+        _SyncFilter.synced: all
+            .where((e) =>
+                e.item.syncStatus == SyncStatus.synced ||
+                e.item.syncStatus == SyncStatus.na)
+            .length,
+        _SyncFilter.uploading:
+            all.where((e) => e.item.syncStatus == SyncStatus.uploading).length,
+        _SyncFilter.pending:
+            all.where((e) => e.item.syncStatus == SyncStatus.pending).length,
+        _SyncFilter.failed:
+            all.where((e) => e.item.syncStatus == SyncStatus.failed).length,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final allAsync = ref.watch(allItemsWithAnchorProvider);
+
+    return allAsync.when(
+      loading: () => const SizedBox(
+        height: 220,
+        child: Center(
+          child: CircularProgressIndicator(
+              color: AppColors.accent, strokeWidth: 2),
+        ),
+      ),
+      error: (e, _) => Padding(
+        padding: EdgeInsets.all(32.r),
+        child: Center(
+          child: Text('$e',
+              style:
+                  TextStyle(color: AppColors.textSecondary, fontSize: 13.sp)),
+        ),
+      ),
+      data: (all) {
+        final counts = _buildCounts(all);
+        final filtered = _applyFilter(all, _filter);
+        final uploading = counts[_SyncFilter.uploading] ?? 0;
+        final pending = counts[_SyncFilter.pending] ?? 0;
+        final failed = counts[_SyncFilter.failed] ?? 0;
+
+        return Padding(
+          padding: EdgeInsets.fromLTRB(16.w, 12.h, 16.w, 100.h),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── Header ──────────────────────────────────────────
+              Row(
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'All Items',
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 20.sp,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+                      if (uploading > 0 || pending > 0)
+                        Text(
+                          uploading > 0
+                              ? '$uploading uploading${pending > 0 ? ', $pending pending' : ''}'
+                              : '$pending pending',
+                          style: TextStyle(
+                            color: const Color(0xFFFF9500),
+                            fontSize: 12.sp,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const Spacer(),
+                  // Total count pill
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(20.r),
+                    child: BackdropFilter(
+                      filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                            horizontal: 10.w, vertical: 5.h),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.70),
+                          borderRadius: BorderRadius.circular(20.r),
+                          border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.90),
+                              width: 1.0),
+                        ),
+                        child: Text(
+                          '${all.length}',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 13.sp,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (failed > 0) ...[
+                    SizedBox(width: 6.w),
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.mediumImpact();
+                        ref
+                            .read(cloudinarySyncProvider.notifier)
+                            .retryFailed();
+                      },
+                      child: Container(
+                        padding: EdgeInsets.symmetric(
+                            horizontal: 8.w, vertical: 5.h),
+                        decoration: BoxDecoration(
+                          color: AppColors.danger.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(20.r),
+                          border: Border.all(
+                              color: AppColors.danger.withValues(alpha: 0.30)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(CupertinoIcons.arrow_clockwise,
+                                size: 11.sp, color: AppColors.danger),
+                            SizedBox(width: 3.w),
+                            Text('Retry $failed',
+                                style: TextStyle(
+                                    color: AppColors.danger,
+                                    fontSize: 11.sp,
+                                    fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              SizedBox(height: 14.h),
+              // ── Filter chips ─────────────────────────────────────
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: _SyncFilter.values.map((f) {
+                    return Padding(
+                      padding: EdgeInsets.only(right: 8.w),
+                      child: _SyncFilterChip(
+                        filter: f,
+                        count: counts[f] ?? 0,
+                        selected: _filter == f,
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          setState(() => _filter = f);
+                        },
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+              SizedBox(height: 16.h),
+              // ── Item list (keyed so animation replays on filter change) ──
+              _SyncItemList(key: ValueKey(_filter), items: filtered),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ─── Filter Chip ──────────────────────────────────────────────────────────────
+
+class _SyncFilterChip extends StatelessWidget {
+  final _SyncFilter filter;
+  final int count;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SyncFilterChip({
+    required this.filter,
+    required this.count,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = filter.color;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 7.h),
+        decoration: BoxDecoration(
+          color: selected
+              ? color.withValues(alpha: 0.14)
+              : Colors.white.withValues(alpha: 0.68),
+          borderRadius: BorderRadius.circular(20.r),
+          border: Border.all(
+            color: selected
+                ? color.withValues(alpha: 0.50)
+                : Colors.white.withValues(alpha: 0.85),
+            width: 1.2,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(filter.icon,
+                size: 13.sp,
+                color: selected ? color : AppColors.textSecondary),
+            SizedBox(width: 5.w),
+            Text(
+              filter.label,
+              style: TextStyle(
+                color: selected ? color : AppColors.textSecondary,
+                fontSize: 12.sp,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+            if (count > 0) ...[
+              SizedBox(width: 5.w),
+              Container(
+                padding:
+                    EdgeInsets.symmetric(horizontal: 5.w, vertical: 1.5.h),
+                decoration: BoxDecoration(
+                  color: selected
+                      ? color.withValues(alpha: 0.18)
+                      : AppColors.textTertiary.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10.r),
+                ),
+                child: Text(
+                  '$count',
+                  style: TextStyle(
+                    color: selected ? color : AppColors.textTertiary,
+                    fontSize: 10.sp,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Animated item list ───────────────────────────────────────────────────────
+
+class _SyncItemList extends StatefulWidget {
+  final List<ItemWithAnchor> items;
+  const _SyncItemList({required this.items, super.key});
+
+  @override
+  State<_SyncItemList> createState() => _SyncItemListState();
+}
+
+class _SyncItemListState extends State<_SyncItemList>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.items.isEmpty) {
+      return Padding(
+        padding: EdgeInsets.symmetric(vertical: 48.h),
+        child: Center(
+          child: Column(
+            children: [
+              Icon(CupertinoIcons.tray,
+                  size: 40.sp, color: AppColors.textTertiary),
+              SizedBox(height: 12.h),
+              Text(
+                'No items here',
+                style: TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 14.sp,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        for (int i = 0; i < widget.items.length; i++) _buildCard(i),
+      ],
+    );
+  }
+
+  Widget _buildCard(int i) {
+    final start = (i * 0.055).clamp(0.0, 0.62);
+    final end = (start + 0.38).clamp(0.0, 1.0);
+    final anim = CurvedAnimation(
+      parent: _ctrl,
+      curve: Interval(start, end, curve: Curves.easeOutCubic),
+    );
+    return Padding(
+      padding: EdgeInsets.only(bottom: 10.h),
+      child: FadeTransition(
+        opacity: CurvedAnimation(
+            parent: _ctrl,
+            curve: Interval(start, end, curve: Curves.easeOut)),
+        child: SlideTransition(
+          position:
+              Tween<Offset>(begin: const Offset(0, 0.12), end: Offset.zero)
+                  .animate(anim),
+          child: _SyncItemCard(entry: widget.items[i]),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Item Card ────────────────────────────────────────────────────────────────
+
+class _SyncItemCard extends StatelessWidget {
+  final ItemWithAnchor entry;
+  const _SyncItemCard({required this.entry});
+
+  String _titleFor(AnchorItemModel item) {
+    if (item.title != null && item.title!.isNotEmpty) return item.title!;
+    if (item.originalFilename != null && item.originalFilename!.isNotEmpty) {
+      return item.originalFilename!;
+    }
+    if (item.type == ItemType.link) {
+      try {
+        return Uri.parse(item.content).host.replaceFirst('www.', '');
+      } catch (_) {}
+    }
+    final c = item.content;
+    return c.length > 42 ? '${c.substring(0, 42).trimRight()}…' : c;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final item = entry.item;
+    final anchorColor = entry.anchorColor;
+
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18.r),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.85),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 14,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(17.r),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+          child: Container(
+            color: Colors.white.withValues(alpha: 0.74),
+            padding: EdgeInsets.all(12.r),
+            child: Row(
+              children: [
+                // Thumbnail
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12.r),
+                  child: SizedBox(
+                    width: 58.r,
+                    height: 58.r,
+                    child: switch (item.type) {
+                      ItemType.image => _Thumb(item: item),
+                      ItemType.video when item.displayThumbnail != null =>
+                        _Thumb(item: item),
+                      ItemType.link =>
+                        _LinkCell(item: item, color: anchorColor),
+                      _ => _TypeCell(type: item.type, color: anchorColor),
+                    },
+                  ),
+                ),
+                SizedBox(width: 12.w),
+                // Info column
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _titleFor(item),
+                        style: TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 13.sp,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: -0.1,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      SizedBox(height: 4.h),
+                      Row(
+                        children: [
+                          Container(
+                            width: 8.r,
+                            height: 8.r,
+                            decoration: BoxDecoration(
+                              color: anchorColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          SizedBox(width: 5.w),
+                          Expanded(
+                            child: Text(
+                              entry.anchorName,
+                              style: TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 11.sp,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                      SizedBox(height: 7.h),
+                      _SyncStatusBadge(status: item.syncStatus),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Sync Status Badge ────────────────────────────────────────────────────────
+
+class _SyncStatusBadge extends StatelessWidget {
+  final SyncStatus status;
+  const _SyncStatusBadge({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final (color, icon, label) = switch (status) {
+      SyncStatus.synced =>
+        (AppColors.success, CupertinoIcons.checkmark_circle_fill, 'Synced'),
+      SyncStatus.uploading => (
+          const Color(0xFFFF9500),
+          CupertinoIcons.arrow_up_circle_fill,
+          'Uploading'
+        ),
+      SyncStatus.pending =>
+        (AppColors.accentSoft, CupertinoIcons.clock_fill, 'Pending'),
+      SyncStatus.failed =>
+        (AppColors.danger, CupertinoIcons.xmark_circle_fill, 'Failed'),
+      SyncStatus.na =>
+        (AppColors.textTertiary, CupertinoIcons.checkmark_circle, 'Saved'),
+    };
+
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 8.w, vertical: 3.5.h),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10.r),
+        border: Border.all(color: color.withValues(alpha: 0.28), width: 1.0),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (status == SyncStatus.uploading)
+            SizedBox(
+              width: 10.r,
+              height: 10.r,
+              child: CupertinoActivityIndicator(radius: 5.r, color: color),
+            )
+          else
+            Icon(icon, size: 10.sp, color: color),
+          SizedBox(width: 4.w),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 10.sp,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

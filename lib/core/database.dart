@@ -303,6 +303,17 @@ class AppDatabase {
     return rows.map(AnchorItemModel.fromMap).toList();
   }
 
+  /// All items across every anchor, joined with anchor name and color.
+  Future<List<Map<String, dynamic>>> getAllItemsWithAnchorInfo() async {
+    final rows = await (await db).rawQuery('''
+      SELECT i.*, a.name as anchor_name, a.color_value as anchor_color_value
+      FROM anchor_items i
+      JOIN anchors a ON i.anchor_id = a.id
+      ORDER BY i.created_at DESC
+    ''');
+    return List<Map<String, dynamic>>.from(rows);
+  }
+
   /// Up to [limit] preview items for home screen anchor cards.
   Future<List<AnchorItemModel>> getPreviewItems(String anchorId,
       {int limit = 4}) async {
@@ -419,6 +430,26 @@ class AppDatabase {
     await (await db).rawUpdate(
         'UPDATE anchor_items SET retry_count = retry_count + 1 WHERE id = ?',
         [id]);
+  }
+
+  /// Reset permanently-failed items so they re-enter the upload queue.
+  Future<void> resetFailedItems() async {
+    await (await db).rawUpdate('''
+      UPDATE anchor_items
+      SET sync_status = 'pending', retry_count = 0
+      WHERE sync_status = 'failed'
+    ''');
+  }
+
+  /// Returns a map of sync_status → count for pending/uploading/failed items.
+  Future<Map<String, int>> getSyncCounts() async {
+    final rows = await (await db).rawQuery('''
+      SELECT sync_status, COUNT(*) as cnt
+      FROM anchor_items
+      WHERE sync_status IN ('pending', 'uploading', 'failed')
+      GROUP BY sync_status
+    ''');
+    return {for (final r in rows) r['sync_status'] as String: r['cnt'] as int};
   }
 
   // ── Sync metadata ─────────────────────────────────────────────────────────

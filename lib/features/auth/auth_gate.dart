@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/sync_service.dart';
 import '../home/home_screen.dart';
 import 'auth_provider.dart';
 import 'login_screen.dart';
@@ -24,8 +25,14 @@ class AuthGate extends ConsumerWidget {
           ),
         ),
       ),
-      // User is signed in → show the app
-      data: (user) => user != null ? const HomeScreen() : const LoginScreen(),
+      // User is signed in → bootstrap sync engine and show the app
+      data: (user) {
+        if (user != null) {
+          ref.watch(cloudinarySyncProvider);
+          return const HomeScreen();
+        }
+        return const LoginScreen();
+      },
       // Something went wrong with the auth stream
       error: (e, _) => Scaffold(
         body: Center(child: Text('Auth error: $e')),

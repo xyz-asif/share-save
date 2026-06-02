@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/database.dart';
 import '../core/firestore_service.dart';
@@ -117,4 +117,34 @@ final anchorsProvider =
 final anchorPreviewProvider =
     FutureProvider.family<List<AnchorItemModel>, String>((ref, anchorId) {
   return AppDatabase.instance.getPreviewItems(anchorId, limit: 4);
+});
+
+/// An item bundled with its parent anchor's display name and color.
+class ItemWithAnchor {
+  final AnchorItemModel item;
+  final String anchorName;
+  final int anchorColorValue;
+
+  const ItemWithAnchor({
+    required this.item,
+    required this.anchorName,
+    required this.anchorColorValue,
+  });
+
+  Color get anchorColor => Color(anchorColorValue);
+}
+
+/// All items across every anchor, each paired with anchor metadata.
+/// Automatically refreshes when [anchorsProvider] changes (e.g. new anchor added).
+final allItemsWithAnchorProvider =
+    FutureProvider<List<ItemWithAnchor>>((ref) async {
+  ref.watch(anchorsProvider);
+  final rows = await AppDatabase.instance.getAllItemsWithAnchorInfo();
+  return rows
+      .map((row) => ItemWithAnchor(
+            item: AnchorItemModel.fromMap(row),
+            anchorName: row['anchor_name'] as String,
+            anchorColorValue: row['anchor_color_value'] as int,
+          ))
+      .toList();
 });

@@ -41,6 +41,9 @@ class SyncSummary {
 class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
   bool _running = false;
 
+  // Max concurrent Cloudinary uploads — keeps memory + bandwidth sane on mobile.
+  static const _maxConcurrent = 3;
+
   @override
   Future<SyncSummary> build() async {
     ref.listen<AsyncValue<bool>>(connectivityProvider, (prev, next) {
@@ -76,20 +79,33 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
 
       state = AsyncData(SyncSummary(pending: items.length));
 
-      for (final item in items) {
-        await _uploadItem(item, user.uid);
-        touchedAnchors.add(item.anchorId);
+      // Upload in parallel batches — faster than sequential, bounded to
+      // avoid saturating mobile connections or OOM on large queues.
+      for (var i = 0; i < items.length; i += _maxConcurrent) {
+        final batch = items.skip(i).take(_maxConcurrent).toList();
+        await Future.wait(batch.map((item) async {
+          await _uploadItem(item, user.uid);
+          touchedAnchors.add(item.anchorId);
+        }));
+        // Emit progress after each batch so the UI stays responsive.
+        state = AsyncData(await _computeSummary());
       }
 
       state = AsyncData(await _computeSummary());
     } finally {
       _running = false;
-      // One invalidation per anchor at the end — avoids the N×2 storm.
       for (final anchorId in touchedAnchors) {
         ref.invalidate(anchorItemsProvider(anchorId));
         ref.invalidate(anchorPreviewProvider(anchorId));
       }
     }
+  }
+
+  /// Reset all permanently-failed items to pending and re-run the upload loop.
+  Future<void> retryFailed() async {
+    await AppDatabase.instance.resetFailedItems();
+    state = AsyncData(await _computeSummary());
+    await syncPending();
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────
@@ -104,8 +120,6 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
       final file = File(item.content);
 
       if (!await file.exists()) {
-        // Source file is gone — cannot upload. Mark failed so the UI
-        // shows the badge and the user can clean it up.
         await AppDatabase.instance.updateItemSync(
           item.id,
           syncStatus: SyncStatus.failed,
@@ -159,8 +173,12 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
   }
 
   Future<SyncSummary> _computeSummary() async {
-    final pending = await AppDatabase.instance.getPendingItems();
-    return SyncSummary(pending: pending.length);
+    final counts = await AppDatabase.instance.getSyncCounts();
+    return SyncSummary(
+      pending: counts['pending'] ?? 0,
+      uploading: counts['uploading'] ?? 0,
+      failed: counts['failed'] ?? 0,
+    );
   }
 }
 

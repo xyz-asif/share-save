@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/database.dart';
 import '../core/firestore_service.dart';
+import '../core/sync_service.dart';
 import '../models/anchor_item_model.dart';
 import 'anchors_provider.dart';
 
@@ -92,6 +93,15 @@ class AnchorItemsNotifier
 
     state = AsyncData([item, ...(state.valueOrNull ?? [])]);
     ref.invalidate(anchorPreviewProvider(arg));
+
+    if (item.needsSync) {
+      unawaited(
+        ref.read(cloudinarySyncProvider.notifier).syncPending().catchError((e) {
+          debugPrint('syncPending after addItem failed: $e');
+        }),
+      );
+    }
+
     return item;
   }
 
