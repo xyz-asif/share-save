@@ -75,11 +75,12 @@ class AppDatabase {
     final path = join(dir, 'anchor.db');
     return openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, _) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) await _migrateV1toV2(db);
         if (oldVersion < 3) await _migrateV2toV3(db);
+        if (oldVersion < 4) await _migrateV3toV4(db);
       },
     );
   }
@@ -193,6 +194,17 @@ class AppDatabase {
         anchor_id TEXT PRIMARY KEY,
         synced_at INTEGER NOT NULL
       )
+    ''');
+  }
+
+  Future<void> _migrateV3toV4(Database db) async {
+    // Items falsely marked synced (file was missing at upload time).
+    // Reset to pending so they retry — if file still exists they
+    // upload properly; if not, they correctly land in 'failed'.
+    await db.execute('''
+      UPDATE anchor_items
+      SET sync_status = 'pending', retry_count = 0
+      WHERE sync_status = 'synced' AND cloudinary_url IS NULL
     ''');
   }
 

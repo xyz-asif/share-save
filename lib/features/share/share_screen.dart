@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/theme.dart';
 import '../../models/anchor_item_model.dart';
 import '../../models/anchor_model.dart';
@@ -115,6 +116,12 @@ class _ShareScreenState extends ConsumerState<ShareScreen>
               originalFilename: path.split('/').last,
               mimeType: data.mimeType,
             )));
+      }
+      final prefs = await SharedPreferences.getInstance();
+      final touched = prefs.getStringList('share_touched_anchors') ?? [];
+      if (!touched.contains(anchorId)) {
+        touched.add(anchorId);
+        await prefs.setStringList('share_touched_anchors', touched);
       }
       // Only refresh this anchor's preview — the list itself didn't change.
       ref.invalidate(anchorPreviewProvider(anchorId));

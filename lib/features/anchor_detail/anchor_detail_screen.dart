@@ -1,13 +1,22 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:chewie/chewie.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_pdfview/flutter_pdfview.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
+import 'package:http/http.dart' as http;
+import 'package:just_audio/just_audio.dart';
+import 'package:mime/mime.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:video_player/video_player.dart';
 import '../../core/cloudinary_service.dart';
 import '../../core/link_preview_service.dart';
 import '../../core/theme.dart';
@@ -71,6 +80,7 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
 
     return Scaffold(
       backgroundColor: AppColors.bg,
+      floatingActionButton: _buildFab(anchor),
       body: RefreshIndicator(
         color: AppColors.accent,
         backgroundColor: AppColors.surface,
@@ -294,38 +304,48 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
           builder: (_) => _TextPreviewSheet(item: item),
         );
       case ItemType.video:
+        Navigator.push(
+          context,
+          PageRouteBuilder(
+            pageBuilder: (_, __, ___) => _VideoPlayerScreen(item: item),
+            transitionDuration: const Duration(milliseconds: 280),
+            transitionsBuilder: (_, anim, __, child) =>
+                FadeTransition(opacity: anim, child: child),
+          ),
+        );
       case ItemType.audio:
-        // Use OpenFilex for local/content-URI paths — it handles Android
-        // FileProvider so we never get a FileUriExposedException.
-        // If the local file is gone but we have a CDN URL, stream from there.
-        try {
-          final path = item.content;
-          if (!path.startsWith('http')) {
-            await OpenFilex.open(path);
-          } else if (item.cloudinaryUrl != null) {
-            await launchUrl(Uri.parse(item.cloudinaryUrl!),
-                mode: LaunchMode.externalApplication);
-          } else {
-            await launchUrl(Uri.parse(path),
-                mode: LaunchMode.externalApplication);
-          }
-        } catch (_) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Cannot open this file')),
-            );
-          }
-        }
-      case ItemType.file:
         if (!context.mounted) return;
         showModalBottomSheet(
           context: context,
-          backgroundColor: AppColors.surface,
-          shape: RoundedRectangleBorder(
-              borderRadius:
-                  BorderRadius.vertical(top: Radius.circular(24.r))),
-          builder: (_) => _FilePreviewSheet(item: item),
+          backgroundColor: Colors.transparent,
+          isScrollControlled: true,
+          builder: (_) => _AudioPlayerSheet(item: item),
         );
+      case ItemType.file:
+        if (!context.mounted) return;
+        final isPdf = (item.mimeType?.contains('pdf') ?? false) ||
+            (item.originalFilename?.toLowerCase().endsWith('.pdf') ?? false) ||
+            item.content.toLowerCase().endsWith('.pdf');
+        if (isPdf) {
+          Navigator.push(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (_, __, ___) => _PdfViewerScreen(item: item),
+              transitionDuration: const Duration(milliseconds: 280),
+              transitionsBuilder: (_, anim, __, child) =>
+                  FadeTransition(opacity: anim, child: child),
+            ),
+          );
+        } else {
+          showModalBottomSheet(
+            context: context,
+            backgroundColor: AppColors.surface,
+            shape: RoundedRectangleBorder(
+                borderRadius:
+                    BorderRadius.vertical(top: Radius.circular(24.r))),
+            builder: (_) => _FilePreviewSheet(item: item),
+          );
+        }
     }
   }
 
@@ -355,6 +375,28 @@ class _AnchorDetailScreenState extends ConsumerState<AnchorDetailScreen>
       await ref.read(anchorsProvider.notifier).remove(anchor.id);
       if (context.mounted) Navigator.pop(context);
     }
+  }
+
+  Widget _buildFab(AnchorModel anchor) {
+    return FloatingActionButton(
+      onPressed: () {
+        HapticFeedback.lightImpact();
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (_) => _AddItemSheet(
+            anchorId: anchor.id,
+            anchorColor: anchor.color,
+          ),
+        );
+      },
+      backgroundColor: anchor.color,
+      foregroundColor: Colors.white,
+      shape: const CircleBorder(),
+      elevation: 4,
+      child: const Icon(Icons.add_rounded, size: 26),
+    );
   }
 }
 
@@ -518,13 +560,18 @@ class _ImageContent extends StatelessWidget {
         errorWidget: (_, __, ___) => _BrokenImage(height: 60.h),
       );
     } else if (isLocalFile) {
-      imageWidget = Image.file(
-        File(item.content),
-        fit: BoxFit.cover,
-        width: double.infinity,
-        cacheWidth: 600,
-        errorBuilder: (_, __, ___) => _BrokenImage(height: 80.h),
-      );
+      final file = File(item.content);
+      if (!file.existsSync()) {
+        imageWidget = _BrokenImage(height: 80.h);
+      } else {
+        imageWidget = Image.file(
+          file,
+          fit: BoxFit.cover,
+          width: double.infinity,
+          cacheWidth: 600,
+          errorBuilder: (_, __, ___) => _BrokenImage(height: 80.h),
+        );
+      }
     } else {
       imageWidget = CachedNetworkImage(
         imageUrl: item.content,
@@ -1397,6 +1444,963 @@ class _TextPreviewSheet extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ─── Add Item Sheet ────────────────────────────────────────────────────────────
+
+class _AddItemSheet extends ConsumerStatefulWidget {
+  final String anchorId;
+  final Color anchorColor;
+
+  const _AddItemSheet({required this.anchorId, required this.anchorColor});
+
+  @override
+  ConsumerState<_AddItemSheet> createState() => _AddItemSheetState();
+}
+
+class _AddItemSheetState extends ConsumerState<_AddItemSheet> {
+  ItemType? _inputMode;
+  final _contentCtrl = TextEditingController();
+  final _titleCtrl = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _contentCtrl.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _contentCtrl.dispose();
+    _titleCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickFiles(ItemType type) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final fileType = switch (type) {
+        ItemType.image => FileType.image,
+        ItemType.video => FileType.video,
+        ItemType.audio => FileType.audio,
+        _ => FileType.any,
+      };
+
+      final result = await FilePicker.platform.pickFiles(
+        type: fileType,
+        allowMultiple: true,
+        withData: false,
+      );
+
+      if (result == null || result.files.isEmpty) return;
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      final notifier =
+          ref.read(anchorItemsProvider(widget.anchorId).notifier);
+      for (final f in result.files) {
+        final path = f.path;
+        if (path == null) continue;
+        await notifier.addItem(
+          type: type,
+          content: path,
+          originalFilename: f.name,
+          mimeType: lookupMimeType(path),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _saveText() async {
+    final content = _contentCtrl.text.trim();
+    if (content.isEmpty || _inputMode == null || _busy) return;
+    setState(() => _busy = true);
+    try {
+      final title = _titleCtrl.text.trim();
+      await ref
+          .read(anchorItemsProvider(widget.anchorId).notifier)
+          .addItem(
+            type: _inputMode!,
+            title: title.isEmpty ? null : title,
+            content: content,
+          );
+      if (mounted) Navigator.pop(context);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.of(context).viewInsets.bottom +
+        MediaQuery.of(context).padding.bottom;
+
+    return Container(
+      margin: EdgeInsets.fromLTRB(12.w, 0, 12.w, 16.h),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(24.r),
+        border: Border.all(color: AppColors.border),
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x14000000),
+              blurRadius: 24,
+              offset: Offset(0, -4)),
+        ],
+      ),
+      padding: EdgeInsets.fromLTRB(20.w, 0, 20.w, bottom + 20.h),
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 200),
+        child: _inputMode != null ? _buildTextInput() : _buildTypeGrid(),
+      ),
+    );
+  }
+
+  Widget _buildTypeGrid() {
+    return Column(
+      key: const ValueKey('grid'),
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const _SheetHandle(),
+        Text(
+          'Add Item',
+          style: TextStyle(
+            color: AppColors.textPrimary,
+            fontSize: 17.sp,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.3,
+          ),
+        ),
+        SizedBox(height: 20.h),
+        GridView.count(
+          crossAxisCount: 3,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: 12.h,
+          crossAxisSpacing: 12.w,
+          childAspectRatio: 1.05,
+          children: [
+            _TypeTile(
+              icon: Icons.image_rounded,
+              label: 'Photo',
+              color: const Color(0xFF4CAF50),
+              onTap: _busy ? null : () => _pickFiles(ItemType.image),
+            ),
+            _TypeTile(
+              icon: Icons.videocam_rounded,
+              label: 'Video',
+              color: const Color(0xFFFF9500),
+              onTap: _busy ? null : () => _pickFiles(ItemType.video),
+            ),
+            _TypeTile(
+              icon: Icons.audiotrack_rounded,
+              label: 'Audio',
+              color: const Color(0xFFE91E8C),
+              onTap: _busy ? null : () => _pickFiles(ItemType.audio),
+            ),
+            _TypeTile(
+              icon: Icons.insert_drive_file_rounded,
+              label: 'Document',
+              color: AppColors.accent,
+              onTap: _busy ? null : () => _pickFiles(ItemType.file),
+            ),
+            _TypeTile(
+              icon: Icons.text_fields_rounded,
+              label: 'Text',
+              color: const Color(0xFF00BCD4),
+              onTap: _busy
+                  ? null
+                  : () => setState(() => _inputMode = ItemType.text),
+            ),
+            _TypeTile(
+              icon: Icons.link_rounded,
+              label: 'Link',
+              color: widget.anchorColor,
+              onTap: _busy
+                  ? null
+                  : () => setState(() => _inputMode = ItemType.link),
+            ),
+          ],
+        ),
+        SizedBox(height: 4.h),
+      ],
+    );
+  }
+
+  Widget _buildTextInput() {
+    final isLink = _inputMode == ItemType.link;
+    return Column(
+      key: const ValueKey('input'),
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SheetHandle(),
+        Row(
+          children: [
+            GestureDetector(
+              onTap: () => setState(() {
+                _inputMode = null;
+                _contentCtrl.clear();
+                _titleCtrl.clear();
+              }),
+              child: Container(
+                width: 32.r,
+                height: 32.r,
+                margin: EdgeInsets.only(right: 10.w),
+                decoration: const BoxDecoration(
+                  color: AppColors.bg,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.arrow_back_ios_rounded,
+                    color: AppColors.textSecondary, size: 14.sp),
+              ),
+            ),
+            Text(
+              isLink ? 'Add Link' : 'Add Text',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 17.sp,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.3,
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: 16.h),
+        TextField(
+          controller: _titleCtrl,
+          style: TextStyle(color: AppColors.textPrimary, fontSize: 15.sp),
+          decoration: const InputDecoration(hintText: 'Title (optional)'),
+          textCapitalization: TextCapitalization.sentences,
+        ),
+        SizedBox(height: 10.h),
+        TextField(
+          controller: _contentCtrl,
+          style: TextStyle(color: AppColors.textPrimary, fontSize: 15.sp),
+          decoration: InputDecoration(
+            hintText: isLink ? 'https://' : 'Enter text…',
+          ),
+          keyboardType:
+              isLink ? TextInputType.url : TextInputType.multiline,
+          textCapitalization:
+              isLink ? TextCapitalization.none : TextCapitalization.sentences,
+          maxLines: isLink ? 1 : 4,
+          autofocus: true,
+        ),
+        SizedBox(height: 20.h),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton(
+            onPressed: (!_busy && _contentCtrl.text.trim().isNotEmpty)
+                ? _saveText
+                : null,
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.accent,
+              disabledBackgroundColor:
+                  AppColors.accent.withValues(alpha: 0.25),
+              padding: EdgeInsets.symmetric(vertical: 14.h),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14.r)),
+            ),
+            child: _busy
+                ? SizedBox(
+                    width: 20.r,
+                    height: 20.r,
+                    child: const CircularProgressIndicator(
+                        color: Colors.white, strokeWidth: 2),
+                  )
+                : Text('Save',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 15.sp)),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SheetHandle extends StatelessWidget {
+  const _SheetHandle();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.symmetric(vertical: 12.h),
+        child: Center(
+          child: Container(
+            width: 36.w,
+            height: 4.h,
+            decoration: BoxDecoration(
+              color: AppColors.border,
+              borderRadius: BorderRadius.circular(2.r),
+            ),
+          ),
+        ),
+      );
+}
+
+class _TypeTile extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback? onTap;
+
+  const _TypeTile({
+    required this.icon,
+    required this.label,
+    required this.color,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap?.call();
+      },
+      child: AnimatedOpacity(
+        opacity: onTap == null ? 0.4 : 1.0,
+        duration: const Duration(milliseconds: 150),
+        child: Container(
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(16.r),
+            border: Border.all(color: color.withValues(alpha: 0.2)),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 40.r,
+                height: 40.r,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12.r),
+                ),
+                child: Icon(icon, color: color, size: 20.sp),
+              ),
+              SizedBox(height: 6.h),
+              Text(
+                label,
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 11.sp,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Video Player Screen ──────────────────────────────────────────────────────
+
+class _VideoPlayerScreen extends StatefulWidget {
+  final AnchorItemModel item;
+  const _VideoPlayerScreen({required this.item});
+
+  @override
+  State<_VideoPlayerScreen> createState() => _VideoPlayerScreenState();
+}
+
+class _VideoPlayerScreenState extends State<_VideoPlayerScreen> {
+  VideoPlayerController? _videoCtrl;
+  ChewieController? _chewieCtrl;
+  bool _initialized = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final url = widget.item.cloudinaryUrl ?? widget.item.content;
+      VideoPlayerController ctrl;
+      if (url.startsWith('http')) {
+        ctrl = VideoPlayerController.networkUrl(Uri.parse(url));
+      } else {
+        final file = File(url);
+        if (!file.existsSync()) {
+          if (mounted) setState(() => _error = 'File not found');
+          return;
+        }
+        ctrl = VideoPlayerController.file(file);
+      }
+      _videoCtrl = ctrl;
+      await ctrl.initialize();
+
+      _chewieCtrl = ChewieController(
+        videoPlayerController: ctrl,
+        autoPlay: true,
+        looping: false,
+        aspectRatio: ctrl.value.aspectRatio,
+        allowFullScreen: true,
+        allowMuting: true,
+        showControlsOnInitialize: true,
+        materialProgressColors: ChewieProgressColors(
+          playedColor: Colors.white,
+          handleColor: Colors.white,
+          backgroundColor: Colors.white24,
+          bufferedColor: Colors.white38,
+        ),
+        placeholder: Container(color: Colors.black),
+        errorBuilder: (_, msg) => Center(
+          child: Text(msg, style: const TextStyle(color: Colors.white70)),
+        ),
+      );
+
+      if (mounted) setState(() => _initialized = true);
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Cannot play video');
+    }
+  }
+
+  @override
+  void dispose() {
+    _chewieCtrl?.dispose();
+    _videoCtrl?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        surfaceTintColor: Colors.transparent,
+        leading: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: const Icon(Icons.close_rounded, color: Colors.white),
+        ),
+        title: Text(
+          widget.item.title ?? widget.item.originalFilename ?? 'Video',
+          style: TextStyle(
+              color: Colors.white,
+              fontSize: 16.sp,
+              fontWeight: FontWeight.w600),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      body: _error != null
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.videocam_off_rounded,
+                      color: Colors.white38, size: 48.sp),
+                  SizedBox(height: 12.h),
+                  Text(_error!,
+                      style: TextStyle(
+                          color: Colors.white54, fontSize: 14.sp)),
+                ],
+              ),
+            )
+          : !_initialized
+              ? const Center(
+                  child: CircularProgressIndicator(
+                      color: Colors.white, strokeWidth: 2))
+              : Center(child: Chewie(controller: _chewieCtrl!)),
+    );
+  }
+}
+
+// ─── Audio Player Sheet ───────────────────────────────────────────────────────
+
+class _AudioPlayerSheet extends StatefulWidget {
+  final AnchorItemModel item;
+  const _AudioPlayerSheet({required this.item});
+
+  @override
+  State<_AudioPlayerSheet> createState() => _AudioPlayerSheetState();
+}
+
+class _AudioPlayerSheetState extends State<_AudioPlayerSheet> {
+  static const _audioColor = Color(0xFFE91E8C);
+
+  late final AudioPlayer _player;
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  bool _loading = true;
+  bool _playing = false;
+  bool _completed = false;
+  String? _error;
+
+  final List<StreamSubscription<dynamic>> _subs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _player = AudioPlayer();
+    _subs.add(_player.positionStream.listen((p) {
+      if (mounted) setState(() => _position = p);
+    }));
+    _subs.add(_player.durationStream.listen((d) {
+      if (d != null && mounted) setState(() => _duration = d);
+    }));
+    _subs.add(_player.playingStream.listen((v) {
+      if (mounted) setState(() => _playing = v);
+    }));
+    _subs.add(_player.playerStateStream.listen((s) {
+      if (s.processingState == ProcessingState.completed && mounted) {
+        setState(() => _completed = true);
+      }
+    }));
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final url = widget.item.cloudinaryUrl ?? widget.item.content;
+      if (url.startsWith('http')) {
+        await _player.setUrl(url);
+      } else {
+        final file = File(url);
+        if (!file.existsSync()) throw Exception('File not found');
+        await _player.setFilePath(url);
+      }
+      if (mounted) {
+        setState(() => _loading = false);
+        await _player.play();
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = 'Cannot play audio';
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _player.dispose();
+    super.dispose();
+  }
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom =
+        MediaQuery.of(context).padding.bottom + MediaQuery.of(context).viewInsets.bottom;
+
+    return Container(
+      margin: EdgeInsets.fromLTRB(12.w, 0, 12.w, 24.h),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(28.r),
+        border: Border.all(color: AppColors.border),
+        boxShadow: const [
+          BoxShadow(
+              color: Color(0x18000000),
+              blurRadius: 32,
+              offset: Offset(0, -6)),
+        ],
+      ),
+      padding: EdgeInsets.fromLTRB(24.w, 0, 24.w, bottom + 24.h),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const _SheetHandle(),
+          // Album art
+          Container(
+            width: 120.r,
+            height: 120.r,
+            decoration: BoxDecoration(
+              color: _audioColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(24.r),
+              border: Border.all(
+                  color: _audioColor.withValues(alpha: 0.2), width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                    color: _audioColor.withValues(alpha: 0.15),
+                    blurRadius: 24,
+                    offset: const Offset(0, 8)),
+              ],
+            ),
+            child: Icon(Icons.audiotrack_rounded,
+                color: _audioColor, size: 48.sp),
+          ),
+          SizedBox(height: 20.h),
+          Text(
+            widget.item.title ??
+                widget.item.originalFilename ??
+                'Audio',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 17.sp,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.3,
+            ),
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (widget.item.mimeType != null) ...[
+            SizedBox(height: 4.h),
+            Text(
+              widget.item.mimeType!,
+              style: TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12.sp),
+            ),
+          ],
+          SizedBox(height: 28.h),
+          if (_error != null) ...[
+            Icon(Icons.error_outline_rounded,
+                color: AppColors.danger, size: 32.sp),
+            SizedBox(height: 8.h),
+            Text(_error!,
+                style: TextStyle(
+                    color: AppColors.textSecondary, fontSize: 13.sp)),
+          ] else if (_loading)
+            const CircularProgressIndicator(
+                color: _audioColor, strokeWidth: 2)
+          else ...[
+            // Seek bar
+            SliderTheme(
+              data: SliderThemeData(
+                trackHeight: 3.h,
+                thumbShape:
+                    RoundSliderThumbShape(enabledThumbRadius: 6.r),
+                overlayShape: SliderComponentShape.noOverlay,
+                activeTrackColor: _audioColor,
+                inactiveTrackColor: AppColors.border,
+                thumbColor: _audioColor,
+              ),
+              child: Slider(
+                value: _duration.inMilliseconds > 0
+                    ? (_position.inMilliseconds /
+                            _duration.inMilliseconds)
+                        .clamp(0.0, 1.0)
+                    : 0.0,
+                onChanged: (v) {
+                  _completed = false;
+                  _player.seek(Duration(
+                      milliseconds:
+                          (v * _duration.inMilliseconds).round()));
+                },
+              ),
+            ),
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 4.w),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(_fmt(_position),
+                      style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 11.sp)),
+                  Text(_fmt(_duration),
+                      style: TextStyle(
+                          color: AppColors.textSecondary,
+                          fontSize: 11.sp)),
+                ],
+              ),
+            ),
+            SizedBox(height: 20.h),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _ControlBtn(
+                  icon: Icons.replay_10_rounded,
+                  size: 28.sp,
+                  onTap: () => _player.seek(
+                      _position - const Duration(seconds: 10)),
+                ),
+                SizedBox(width: 24.w),
+                GestureDetector(
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    if (_completed) {
+                      _player.seek(Duration.zero);
+                      setState(() => _completed = false);
+                      _player.play();
+                    } else if (_playing) {
+                      _player.pause();
+                    } else {
+                      _player.play();
+                    }
+                  },
+                  child: Container(
+                    width: 64.r,
+                    height: 64.r,
+                    decoration: const BoxDecoration(
+                      color: _audioColor,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      _completed
+                          ? Icons.replay_rounded
+                          : _playing
+                              ? Icons.pause_rounded
+                              : Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: 30.sp,
+                    ),
+                  ),
+                ),
+                SizedBox(width: 24.w),
+                _ControlBtn(
+                  icon: Icons.forward_10_rounded,
+                  size: 28.sp,
+                  onTap: () => _player.seek(
+                      _position + const Duration(seconds: 10)),
+                ),
+              ],
+            ),
+          ],
+          SizedBox(height: 8.h),
+        ],
+      ),
+    );
+  }
+}
+
+class _ControlBtn extends StatelessWidget {
+  final IconData icon;
+  final double size;
+  final VoidCallback onTap;
+  const _ControlBtn(
+      {required this.icon, required this.size, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          onTap();
+        },
+        child: Container(
+          width: 44.r,
+          height: 44.r,
+          decoration: const BoxDecoration(
+            color: AppColors.bg,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: AppColors.textPrimary, size: size),
+        ),
+      );
+}
+
+// ─── PDF Viewer Screen ────────────────────────────────────────────────────────
+
+class _PdfViewerScreen extends StatefulWidget {
+  final AnchorItemModel item;
+  const _PdfViewerScreen({required this.item});
+
+  @override
+  State<_PdfViewerScreen> createState() => _PdfViewerScreenState();
+}
+
+class _PdfViewerScreenState extends State<_PdfViewerScreen> {
+  String? _localPath;
+  bool _loading = true;
+  String? _error;
+  int _pageCount = 0;
+  int _currentPage = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      final url = widget.item.cloudinaryUrl ?? widget.item.content;
+      if (url.startsWith('http')) {
+        final dir = await getTemporaryDirectory();
+        final name = widget.item.originalFilename ??
+            Uri.parse(url).pathSegments.last.split('?').first;
+        final dest = '${dir.path}/${name.isEmpty ? 'document.pdf' : name}';
+        final resp = await http.get(Uri.parse(url));
+        if (resp.statusCode != 200) {
+          throw Exception('Download failed (${resp.statusCode})');
+        }
+        await File(dest).writeAsBytes(resp.bodyBytes);
+        _localPath = dest;
+      } else {
+        if (!File(url).existsSync()) throw Exception('File not found');
+        _localPath = url;
+      }
+      if (mounted) setState(() => _loading = false);
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = e.toString();
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.bg,
+      appBar: AppBar(
+        backgroundColor: AppColors.surface,
+        surfaceTintColor: Colors.transparent,
+        leading: GestureDetector(
+          onTap: () => Navigator.pop(context),
+          child: Icon(Icons.close_rounded,
+              color: AppColors.textPrimary, size: 22.sp),
+        ),
+        title: Text(
+          widget.item.originalFilename ??
+              widget.item.title ??
+              'Document',
+          style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 16.sp,
+              fontWeight: FontWeight.w600),
+          overflow: TextOverflow.ellipsis,
+        ),
+        actions: [
+          if (_pageCount > 0)
+            Padding(
+              padding: EdgeInsets.only(right: 16.w),
+              child: Center(
+                child: Container(
+                  padding:
+                      EdgeInsets.symmetric(horizontal: 10.w, vertical: 4.h),
+                  decoration: BoxDecoration(
+                    color: AppColors.bg,
+                    borderRadius: BorderRadius.circular(20.r),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Text(
+                    '${_currentPage + 1} / $_pageCount',
+                    style: TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12.sp),
+                  ),
+                ),
+              ),
+            ),
+        ],
+        bottom: PreferredSize(
+          preferredSize: Size.fromHeight(1.h),
+          child: Container(height: 1.h, color: AppColors.divider),
+        ),
+      ),
+      body: _loading
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const CircularProgressIndicator(
+                      color: AppColors.accent, strokeWidth: 2),
+                  SizedBox(height: 14.h),
+                  Text(
+                    widget.item.cloudinaryUrl != null
+                        ? 'Downloading…'
+                        : 'Opening…',
+                    style: TextStyle(
+                        color: AppColors.textSecondary, fontSize: 13.sp),
+                  ),
+                ],
+              ),
+            )
+          : _error != null
+              ? Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(32.r),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.description_outlined,
+                            color: AppColors.textTertiary, size: 48.sp),
+                        SizedBox(height: 14.h),
+                        Text('Cannot open document',
+                            style: TextStyle(
+                                color: AppColors.textPrimary,
+                                fontSize: 16.sp,
+                                fontWeight: FontWeight.w600)),
+                        SizedBox(height: 6.h),
+                        Text(_error!,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 13.sp,
+                                height: 1.5)),
+                        SizedBox(height: 24.h),
+                        FilledButton.icon(
+                          onPressed: () async {
+                            final path =
+                                widget.item.content;
+                            if (!path.startsWith('http')) {
+                              await OpenFilex.open(path);
+                            } else {
+                              await launchUrl(
+                                  Uri.parse(
+                                      widget.item.cloudinaryUrl ??
+                                          path),
+                                  mode: LaunchMode
+                                      .externalApplication);
+                            }
+                          },
+                          icon: Icon(Icons.open_in_new_rounded,
+                              size: 16.sp),
+                          label: const Text('Open externally'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: AppColors.accent,
+                            shape: RoundedRectangleBorder(
+                                borderRadius:
+                                    BorderRadius.circular(12.r)),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : PDFView(
+                  filePath: _localPath!,
+                  enableSwipe: true,
+                  swipeHorizontal: false,
+                  autoSpacing: true,
+                  pageFling: true,
+                  pageSnap: true,
+                  fitEachPage: true,
+                  onRender: (pages) {
+                    if (mounted) {
+                      setState(() => _pageCount = pages ?? 0);
+                    }
+                  },
+                  onPageChanged: (page, _) {
+                    if (mounted) {
+                      setState(() => _currentPage = page ?? 0);
+                    }
+                  },
+                  onError: (_) {
+                    if (mounted) {
+                      setState(
+                          () => _error = 'Cannot render this PDF');
+                    }
+                  },
+                  onPageError: (_, __) {},
+                ),
     );
   }
 }

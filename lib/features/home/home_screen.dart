@@ -8,11 +8,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/cloudinary_service.dart';
 import '../../core/link_preview_service.dart';
 import '../../core/theme.dart';
 import '../../models/anchor_item_model.dart';
 import '../../models/anchor_model.dart';
+import '../../providers/anchor_items_provider.dart';
 import '../../providers/anchors_provider.dart';
 import '../anchor_detail/anchor_detail_screen.dart';
 import '../create_anchor/create_anchor_sheet.dart';
@@ -60,8 +62,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       _wasHidden = true;
     } else if (state == AppLifecycleState.resumed && _wasHidden) {
       _wasHidden = false;
-      // Only invalidate the list — per-anchor previews rebuild lazily via their own providers.
-      ref.invalidate(anchorsProvider);
+      _refreshAfterShare();
+    }
+  }
+
+  Future<void> _refreshAfterShare() async {
+    final prefs = await SharedPreferences.getInstance();
+    final touched = prefs.getStringList('share_touched_anchors') ?? const [];
+
+    // Always refresh the anchor list — item counts may have changed.
+    ref.invalidate(anchorsProvider);
+
+    // For each anchor that received new items via the share-target,
+    // invalidate BOTH the home preview AND the detail items providers.
+    // Targeted invalidation only — never invalidate the whole family.
+    for (final anchorId in touched) {
+      ref.invalidate(anchorPreviewProvider(anchorId));
+      ref.invalidate(anchorItemsProvider(anchorId));
+    }
+
+    if (touched.isNotEmpty) {
+      await prefs.remove('share_touched_anchors');
     }
   }
 
@@ -116,6 +137,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     if (list.isEmpty) {
                       return const SliverFillRemaining(child: _EmptyState());
                     }
+                    if (_selectedTab == 1) {
+                      return SliverToBoxAdapter(
+                        child: _AnchorGridView(
+                          key: ValueKey('grid_$_sortReversed'),
+                          anchors: list,
+                        ),
+                      );
+                    }
                     return SliverToBoxAdapter(
                       child: _AnchorListColumn(
                         key: ValueKey(_sortReversed),
@@ -128,7 +157,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
           ),
           Positioned(
-            bottom: MediaQuery.of(context).padding.bottom + 16,
+            bottom: MediaQuery.of(context).padding.bottom + 8,
             left: 20.w,
             child: _FloatingNavBar(
               selectedIndex: _selectedTab,
@@ -411,6 +440,243 @@ class _AnchorListColumnState extends State<_AnchorListColumn>
           end: Offset.zero,
         ).animate(anim),
         child: _AnchorCard(anchor: widget.anchors[i]),
+      ),
+    );
+  }
+}
+
+// ─── Grid View ────────────────────────────────────────────────────────────────
+
+class _AnchorGridView extends StatefulWidget {
+  final List<AnchorModel> anchors;
+  const _AnchorGridView({required this.anchors, super.key});
+
+  @override
+  State<_AnchorGridView> createState() => _AnchorGridViewState();
+}
+
+class _AnchorGridViewState extends State<_AnchorGridView>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 750),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(16.w, 8.h, 16.w, 56.h),
+      child: GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          crossAxisSpacing: 16.w,
+          mainAxisSpacing: 24.h,
+          childAspectRatio: 0.76,
+        ),
+        itemCount: widget.anchors.length,
+        itemBuilder: (context, i) {
+          final start = (i * 0.07).clamp(0.0, 0.65);
+          final end = (start + 0.35).clamp(0.0, 1.0);
+          final anim = CurvedAnimation(
+            parent: _ctrl,
+            curve: Interval(start, end, curve: Curves.easeOutCubic),
+          );
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.18),
+              end: Offset.zero,
+            ).animate(anim),
+            child: FadeTransition(
+              opacity: CurvedAnimation(
+                parent: _ctrl,
+                curve: Interval(start, end, curve: Curves.easeOut),
+              ),
+              child: _AnchorGridCard(anchor: widget.anchors[i]),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ─── Grid Card ────────────────────────────────────────────────────────────────
+
+class _AnchorGridCard extends ConsumerStatefulWidget {
+  final AnchorModel anchor;
+  const _AnchorGridCard({required this.anchor});
+
+  @override
+  ConsumerState<_AnchorGridCard> createState() => _AnchorGridCardState();
+}
+
+class _AnchorGridCardState extends ConsumerState<_AnchorGridCard> {
+  bool _pressed = false;
+
+  void _onTap() {
+    HapticFeedback.selectionClick();
+    Navigator.of(context).push(_anchorRoute(widget.anchor));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final previewAsync = ref.watch(anchorPreviewProvider(widget.anchor.id));
+    final items = previewAsync.valueOrNull ?? [];
+
+    return GestureDetector(
+      onTapDown: (_) => setState(() => _pressed = true),
+      onTapUp: (_) {
+        setState(() => _pressed = false);
+        _onTap();
+      },
+      onTapCancel: () => setState(() => _pressed = false),
+      child: AnimatedScale(
+        scale: _pressed ? 0.95 : 1.0,
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOut,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: _StackedCardsPreview(
+                  items: items, color: widget.anchor.color),
+            ),
+            SizedBox(height: 4.h),
+            Text(
+              widget.anchor.name,
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 13.sp,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.2,
+              ),
+              maxLines: 2,
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+            ),
+            SizedBox(height: 3.h),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  widget.anchor.itemCount == 0
+                      ? 'Empty'
+                      : '${widget.anchor.itemCount} item${widget.anchor.itemCount == 1 ? '' : 's'}',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 11.sp,
+                    fontWeight: FontWeight.w400,
+                  ),
+                ),
+                SizedBox(width: 4.w),
+                Icon(
+                  CupertinoIcons.lock_fill,
+                  size: 10.sp,
+                  color: AppColors.textTertiary,
+                ),
+              ],
+            ),
+            SizedBox(height: 4.h),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Stacked Cards Preview ────────────────────────────────────────────────────
+
+class _StackedCardsPreview extends StatelessWidget {
+  final List<AnchorItemModel> items;
+  final Color color;
+  const _StackedCardsPreview({required this.items, required this.color});
+
+  // [angle°, dx fraction of W, dy fraction of H] — index 0=back-right, 1=back-left, 2=front
+  static const _cfg = [
+    (17.0, 0.10, -0.09),   // back-right: peeks right, shifted UP
+    (-15.0, -0.09, -0.07), // back-left: peeks left, shifted UP
+    (0.0, 0.0, 0.0),       // front: straight, centered
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final w = constraints.maxWidth;
+      final h = constraints.maxHeight;
+      final cardW = w * 0.64;
+      final cardH = h * 0.70;
+
+      return Stack(
+        alignment: Alignment.center,
+        children: [
+          for (int i = 0; i < 3; i++)
+            Transform.translate(
+              offset: Offset(_cfg[i].$2 * w, _cfg[i].$3 * h),
+              child: Transform.rotate(
+                angle: _cfg[i].$1 * math.pi / 180,
+                child: _cardSlot(
+                  i < items.length ? items[i] : null,
+                  cardW,
+                  cardH,
+                ),
+              ),
+            ),
+        ],
+      );
+    });
+  }
+
+  Widget _cardSlot(AnchorItemModel? item, double w, double h) {
+    return Container(
+      width: w,
+      height: h,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14.r),
+        border: Border.all(color: Colors.white, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.16),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12.r),
+        child: item == null
+            ? Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      color.withValues(alpha: 0.30),
+                      color.withValues(alpha: 0.12),
+                    ],
+                  ),
+                ),
+              )
+            : switch (item.type) {
+                ItemType.image => _Thumb(item: item),
+                ItemType.video when item.displayThumbnail != null =>
+                  _Thumb(item: item),
+                _ => _TypeCell(type: item.type, color: color),
+              },
       ),
     );
   }
@@ -1021,7 +1287,7 @@ class _FloatingNavBar extends StatelessWidget {
               ),
               SizedBox(width: 4.w),
               _NavItem(
-                icon: CupertinoIcons.person_2,
+                icon: CupertinoIcons.rectangle_stack,
                 index: 1,
                 selectedIndex: selectedIndex,
                 onTap: onTap,

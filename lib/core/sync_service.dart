@@ -104,9 +104,11 @@ class CloudinarySyncNotifier extends AsyncNotifier<SyncSummary> {
       final file = File(item.content);
 
       if (!await file.exists()) {
+        // Source file is gone — cannot upload. Mark failed so the UI
+        // shows the badge and the user can clean it up.
         await AppDatabase.instance.updateItemSync(
           item.id,
-          syncStatus: SyncStatus.synced,
+          syncStatus: SyncStatus.failed,
         );
         return;
       }
